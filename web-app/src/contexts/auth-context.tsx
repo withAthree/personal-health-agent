@@ -23,7 +23,7 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot)
+  const auth = useSyncExternalStore(subscribeAuth, getAuthSnapshot, getAuthSnapshot)
   const token = auth?.token ?? null
 
   // 启动时校验一次令牌：已被服务端吊销或用户已删除时，api 层收到 401 会清掉登录态，
