@@ -102,3 +102,13 @@ uploads/
 *.db
 *.sqlite
 *.sqlite3
+
+# ------------------------------------------------------------
+# 本地 AI 工具目录（不入库）
+# ------------------------------------------------------------
+# Claude Code 的技能入口，实际是指向 .agents/skills/ 的软链接，
+# 链接目标是本机绝对路径（换机器/Windows 下会失效）；正本已在 .agents/skills/ 版本管理
+.claude/skills/
+
+# WorkBuddy 的本地记忆与状态
+document/.workbuddy-ai/
