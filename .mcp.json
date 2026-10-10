@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "aoci": {
+      "command": "C:/Users/huang/.aoci/bin/aoci.exe",
+      "args": [
+        "--repo",
+        "D:/Projects/Software Project/personal-health-agent",
+        "mcp"
+      ]
+    }
+  }
+}

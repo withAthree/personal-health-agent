@@ -1,0 +1,49 @@
+name: personal-health-agent-app
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    # 容器名在 Docker 守护进程内全局唯一，必须加项目前缀，
+    # 否则会与同机上其他项目的同名容器冲突。
+    container_name: personal-health-agent-pgvector
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 123456
+      POSTGRES_DB: vec_db
+    ports:
+      # 宿主机 5432 映射到容器 5432。若宿主机已自带 PostgreSQL 占用 5432，
+      # 改为 "5433:5432"，并同步修改应用侧连接端口。
+      - "5432:5432"
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+      # 仅在数据卷首次初始化时执行。
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    shm_size: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vec_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: personal-health-agent-redis
+    restart: unless-stopped
+    command: redis-server --requirepass 123456
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      # 密码必须与上方 --requirepass 保持一致，否则容器长期 unhealthy。
+      test: ["CMD-SHELL", "redis-cli -a 123456 --no-auth-warning ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  pgvector_data:
+  redis_data:

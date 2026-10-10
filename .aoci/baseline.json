@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "created_at": "2026-10-10T13:31:49Z",
+  "updated_at": "2026-10-10T13:35:58Z",
+  "files": {
+    ".mcp.json": {
+      "sha256": "7b6c886e94b6517c1c7a21866644633192cfb4e44aebd15e2c3e105ff6e16aa4",
+      "size": 218,
+      "normalized_sha256": "7b6c886e94b6517c1c7a21866644633192cfb4e44aebd15e2c3e105ff6e16aa4"
+    },
+    "AGENTS.md": {
+      "sha256": "dc47b2e2ba3780798a03e29de5910b9aa8b4f34b4e759cc7d62db5be2549b3c6",
+      "size": 15298,
+      "normalized_sha256": "dc47b2e2ba3780798a03e29de5910b9aa8b4f34b4e759cc7d62db5be2549b3c6"
+    },
+    "aoci.code.txt": {
+      "sha256": "81419ce8f38d72d3734c06993c1ad4d46c727d60172bf7c0218e02b9b9aac20c",
+      "size": 621,
+      "normalized_sha256": "81419ce8f38d72d3734c06993c1ad4d46c727d60172bf7c0218e02b9b9aac20c"
+    },
+    "aoci.meta.txt": {
+      "role": "index",
+      "sha256": "61ac6ef5561f6ff448af9eb427c0cfc1f224d566ffd698092841bcd910409ce9",
+      "size": 859,
+      "normalized_sha256": "61ac6ef5561f6ff448af9eb427c0cfc1f224d566ffd698092841bcd910409ce9"
+    },
+    "aoci.txt": {
+      "role": "index",
+      "sha256": "8903c1ef121b63fb44de47f18de2153f684cf80da0cfe31c74f887a12524b4cc",
+      "size": 310,
+      "normalized_sha256": "8903c1ef121b63fb44de47f18de2153f684cf80da0cfe31c74f887a12524b4cc"
+    }
+  },
+  "managed_scope": {
+    "version": "managed-scope-baseline/v1",
+    "policy_identity": "5190f0d93c9f26c23897f8caaac3614e7fdfffdf84d524a159f507b05a81b9e9",
+    "observe_change_policy": "review_required",
+    "budget_policy_identity": "5c4b33ae5c6b8b6c3004a825fd5a83d0c6bc380f85b2b3eb97e4dbb0899d2ac8",
+    "budget_policy": {
+      "version": "cognition-budget-policy/v1",
+      "mode": "enforce",
+      "whole_index": {
+        "target_tokens": 120000,
+        "warning_tokens": 180000,
+        "max_tokens": 240000
+      },
+      "r": [
+        {
+          "min_c": 1,
+          "max_c": 4,
+          "target_tokens": 25,
+          "max_tokens": 50
+        },
+        {
+          "min_c": 5,
+          "max_c": 7,
+          "target_tokens": 45,
+          "max_tokens": 90
+        },
+        {
+          "min_c": 8,
+          "max_c": 8,
+          "target_tokens": 70,
+          "max_tokens": 140
+        },
+        {
+          "min_c": 9,
+          "max_c": 9,
+          "target_tokens": 90,
+          "max_tokens": 180
+        }
+      ],
+      "s": [
+        {
+          "min_c": 1,
+          "max_c": 4,
+          "target_tokens": 20,
+          "max_tokens": 40
+        },
+        {
+          "min_c": 5,
+          "max_c": 7,
+          "target_tokens": 40,
+          "max_tokens": 80
+        },
+        {
+          "min_c": 8,
+          "max_c": 8,
+          "target_tokens": 70,
+          "max_tokens": 140
+        },
+        {
+          "min_c": 9,
+          "max_c": 9,
+          "target_tokens": 100,
+          "max_tokens": 200
+        }
+      ]
+    }
+  }
+}

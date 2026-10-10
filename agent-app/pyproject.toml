@@ -1,0 +1,120 @@
+[project]
+name = "agent-app"
+version = "0.1.0"
+description = "基于 FastAPI + LangChain/LangGraph 的智能体服务"
+readme = "README.md"
+authors = [
+    { name = "hkx", email = "huangdaddy@qq.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "alembic>=1.20.0",
+    "fastapi[standard]>=0.143.0",
+    "httpx>=0.28.1",
+    "langchain>=1.4.4",
+    "langchain-openai>=1.7.0",
+    "langgraph>=1.2.14",
+    "langgraph-checkpoint-postgres>=3.1.2",
+    "pgvector>=0.5.1",
+    "psycopg[binary,pool]>=3.3.6",
+    "pwdlib[argon2]>=0.3.1",
+    "pydantic>=2.14.0",
+    "pydantic-settings>=2.15.0",
+    "pyjwt>=2.15.1",
+    "python-dotenv>=1.2.4",
+    "redis>=8.1.0",
+    "sqlalchemy[asyncio]>=2.1.4",
+    "sse-starlette>=3.5.0",
+    "structlog>=26.1.0",
+]
+
+[project.scripts]
+agent-app = "agent_app:main"
+
+[project.optional-dependencies]
+observability = [
+    "langfuse>=3.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.20,<0.13.0"]
+build-backend = "uv_build"
+
+# ==================== Ruff ====================
+[tool.ruff]
+line-length = 88
+indent-width = 4
+target-version = "py314"
+# 显式声明源码根，否则仓库根的 alembic/ 会被当成一方包，导致 env.py 的 import 分组错误。
+src = ["src"]
+
+exclude = [
+    ".bzr", ".direnv", ".eggs", ".git", ".hg", ".mypy_cache",
+    ".nox", ".pants.d", ".pytype", ".ruff_cache", ".svn",
+    ".tox", ".venv", "__pypackages__", "_build", "buck-out",
+    "build", "dist", "node_modules", "venv", ".agents", ".claude",
+    "migrations", "alembic/versions",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # Pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "ANN",   # flake8-annotations
+    "B",     # flake8-bugbear
+    "C4",    # flake8-comprehensions
+    "DTZ",   # flake8-datetimez
+    "T20",   # flake8-print
+    "PYI",   # flake8-pyi
+    "PT",    # flake8-pytest-style
+    "SIM",   # flake8-simplify
+    "TID",   # flake8-tidy-imports
+    "RUF",   # Ruff-specific rules
+]
+
+ignore = [
+    "RUF001",  # 允许字符串中的中文全角标点
+    "RUF002",  # 允许文档字符串中的中文全角标点
+    "RUF003",  # 允许注释中的中文全角标点
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "ANN201"]
+
+[tool.ruff.lint.isort]
+# 仓库根有同名目录 alembic/，不显式声明时 ruff 会把 alembic 包误判为一方库。
+known-first-party = ["agent_app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ==================== Mypy ====================
+[tool.mypy]
+python_version = "3.14"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+strict_equality = true
+
+# ==================== Pytest ====================
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.0",
+]

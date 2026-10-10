@@ -1,0 +1,5 @@
+#AOCI-CODE-VOLUME: 1
+
+===D:/Projects/Software Project/personal-health-agent/===
+.mcp.json[CG7T]: F:注册 aoci MCP server 接入 | R:code:AGENTS.md | A:mcpServers.aoci = {command, args}，仅定义一个 server | S:command 与 --repo 为硬编码 Windows 绝对路径，换机或迁移仓库后必须同步更新，否则 MCP 接入静默失效。
+AGENTS.md[CG8S]: F:定义 Agent 的 AOCI 仓库认知契约 | R:code:.mcp.json | A:- | S:全文位于 <!-- aoci:begin --> 与 <!-- aoci:end --> 之间，属 AOCI 托管区块；init 与后续维护会覆盖该区块内容，项目自定义指令必须写在区块之外。
