@@ -20,6 +20,25 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+#: 不属于 Alembic 管理的对象名前缀。LangGraph 的 checkpointer 会在启动时
+#: 自己建表与索引（见 agent_app.llm.agent.open_checkpointer），必须排除，
+#: 否则 autogenerate 会生成 DROP TABLE，把模型记忆连同表一起删掉。
+_IGNORED_NAME_PREFIXES = ("checkpoint",)
+
+
+def include_object(
+    obj: object,
+    name: str | None,
+    type_: str,
+    reflected: bool,
+    compare_to: object,
+) -> bool:
+    """告诉 Alembic 哪些对象不归它管。"""
+    del obj, type_, reflected, compare_to
+    if name is None:
+        return True
+    return not name.startswith(_IGNORED_NAME_PREFIXES)
+
 
 def run_migrations_offline() -> None:
     """离线模式：只生成 SQL，不连接数据库。"""
@@ -29,6 +48,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -40,6 +60,7 @@ def do_run_migrations(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()

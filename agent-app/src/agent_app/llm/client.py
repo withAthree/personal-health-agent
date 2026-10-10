@@ -17,11 +17,27 @@ SYSTEM_PROMPT = (
 
 @lru_cache(maxsize=1)
 def get_llm() -> ChatOpenAI:
-    """返回 LLM 客户端单例。"""
+    """返回对话用的 LLM 客户端单例。"""
     return ChatOpenAI(
         model=settings.llm_model,
         api_key=SecretStr(settings.llm_api_key) if settings.llm_api_key else None,
         base_url=settings.llm_base_url,
         temperature=0.7,
         streaming=True,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_summary_llm() -> ChatOpenAI:
+    """返回摘要专用的 LLM 客户端单例。
+
+    与对话客户端分开：摘要需要一次性拿到完整文本，不需要流式，
+    温度也调低，避免摘要本身被重新演绎。
+    """
+    return ChatOpenAI(
+        model=settings.llm_model,
+        api_key=SecretStr(settings.llm_api_key) if settings.llm_api_key else None,
+        base_url=settings.llm_base_url,
+        temperature=0.2,
+        streaming=False,
     )

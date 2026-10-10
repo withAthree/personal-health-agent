@@ -115,7 +115,6 @@ export interface Credentials {
   phone: string
   password: string
 }
-
 /** `POST /api/v1/auth/register` 与 `/login` 的响应体。 */
 export interface AuthTokenResponse {
   access_token: string
@@ -153,4 +152,45 @@ export async function logout(): Promise<void> {
   } finally {
     clearAuth()
   }
+}
+
+/** 账本里的一条消息，字段对应后端 `MessageOut`。 */
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  agent_source: string | null
+  created_at: string
+}
+
+/** 后端 `SessionMessagesOut`：会话元信息 + 全量消息。 */
+export interface SessionMessages {
+  session_id: string
+  title: string | null
+  /** 前多少条消息已被摘要压缩（只影响模型上下文，账本里原文仍在）。 */
+  compacted_message_count: number
+  messages: ChatMessage[]
+}
+
+/**
+ * 拉取会话的全量账本。
+ *
+ * 这是前端渲染历史的唯一来源：模型侧无论怎么压缩，这里拿到的都是原文，
+ * 因此用户看到的对话永不缺失。
+ */
+export async function fetchSessionMessages(sessionId: string): Promise<SessionMessages> {
+  const response = await http.get<SessionMessages>(`/chat/${sessionId}/messages`)
+  return response.data
+}
+
+/**
+ * 【临时】读取模型当前上下文里的摘要，只服务开发期肉眼验收压缩效果。
+ *
+ * TODO(临时): 压缩功能验收完成后，连同 ChatPage 里的摘要查看块一起删除。
+ */
+export async function fetchSessionSummary(sessionId: string): Promise<string | null> {
+  const response = await http.get<{ session_id: string; summary: string | null }>(
+    `/chat/${sessionId}/summary`,
+  )
+  return response.data.summary
 }

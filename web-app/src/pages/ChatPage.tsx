@@ -20,7 +20,14 @@ import { Field, FieldDescription, FieldError, FieldGroup } from '@/components/ui
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
-import { streamChat } from '@/lib/api'
+import { MarkdownMessage } from '@/components/MarkdownMessage'
+import {
+  fetchSessionMessages,
+  fetchSessionSummary,
+  streamChat,
+  type ChatMessage,
+} from '@/lib/api'
+import { clearLastSession, readLastSession, saveLastSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
 
 interface Bubble {
@@ -40,6 +47,22 @@ const composerSchema = z.object({
 
 type ComposerValues = z.infer<typeof composerSchema>
 
+/** 账本里 role 为 system 的行不参与界面渲染（当前后端也不会返回）。 */
+function isVisibleMessage(
+  message: ChatMessage,
+): message is ChatMessage & { role: 'user' | 'assistant' } {
+  return message.role !== 'system'
+}
+
+/** Radix 的 ScrollArea 不对外暴露 viewport，只能从 root 里查出来。 */
+function findViewport(root: HTMLElement | null): HTMLElement | null {
+  return (
+    root?.querySelector<HTMLElement>(
+      '[data-radix-scroll-area-viewport], [data-slot="scroll-area-viewport"]',
+    ) ?? null
+  )
+}
+
 function BubbleRow({ bubble }: { bubble: Bubble }) {
   const isUser = bubble.role === 'user'
 
@@ -53,9 +76,9 @@ function BubbleRow({ bubble }: { bubble: Bubble }) {
       <div className="max-w-[85%] space-y-1">
         <div
           className={cn(
-            'rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap',
+            'rounded-2xl px-4 py-2.5 text-sm',
             isUser
-              ? 'rounded-br-sm bg-primary text-primary-foreground'
+              ? 'rounded-br-sm bg-primary whitespace-pre-wrap text-primary-foreground'
               : 'rounded-bl-sm bg-muted text-foreground',
           )}
         >
@@ -65,8 +88,10 @@ function BubbleRow({ bubble }: { bubble: Bubble }) {
               <Skeleton className="h-4 w-24 bg-foreground/15" />
               <span className="sr-only">正在思考…</span>
             </>
-          ) : (
+          ) : isUser ? (
             bubble.content
+          ) : (
+            <MarkdownMessage content={bubble.content} />
           )}
         </div>
         {!isUser && bubble.agentSource !== null ? (
@@ -79,15 +104,52 @@ function BubbleRow({ bubble }: { bubble: Bubble }) {
   )
 }
 
+/** 压缩分隔线：告诉用户「上面的内容模型已经换成摘要了，但原文还在」。 */
+function CompactionDivider({ count }: { count: number }) {
+  return (
+    <div
+      className="flex items-center gap-3 py-1"
+      role="separator"
+      aria-label={`以上 ${String(count)} 条对话已被压缩`}
+    >
+      <span className="h-px flex-1 bg-border" />
+      <span className="shrink-0 text-[11px] text-muted-foreground">
+        以上 {count} 条已压成摘要（只影响模型，原文保留）
+      </span>
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  )
+}
+
+/** 把账本消息转成界面气泡。 */
+function toBubbles(messages: ChatMessage[]): Bubble[] {
+  return messages.filter(isVisibleMessage).map((message, index) => ({
+    id: index + 1,
+    role: message.role,
+    content: message.content,
+    agentSource: message.agent_source,
+    pending: false,
+  }))
+}
+
 export function ChatPage() {
   const [bubbles, setBubbles] = useState<Bubble[]>([])
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [compactedCount, setCompactedCount] = useState(0)
+  // 初始值直接读本地记忆：有会话才需要在首屏拉历史，避免在 effect 里同步 setState
+  const [loadingHistory, setLoadingHistory] = useState(() => readLastSession() !== null)
+  // TODO(临时): 摘要查看块只用于开发期验收压缩效果，验收后连同状态一起删除
+  const [summaryOpen, setSummaryOpen] = useState(false)
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summary, setSummary] = useState<string | null>(null)
 
   const nextIdRef = useRef(1)
   const abortRef = useRef<AbortController | null>(null)
-  const endRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  // 是否停在底部：停在底部才跟随新内容，用户自己往上翻时不再把他拽回来
+  const stickRef = useRef(true)
 
   const composer = useForm<ComposerValues>({
     resolver: zodResolver(composerSchema),
@@ -96,14 +158,107 @@ export function ChatPage() {
   // useWatch 走订阅，比 watch() 更贴合 React Compiler
   const message = useWatch({ control: composer.control, name: 'message' })
   const messageError = composer.formState.errors.message
+  const hasMessages = !loadingHistory && bubbles.length > 0
 
-  // 新内容到达后滚到底部；ScrollArea 的 viewport 拿不到 ref，所以用列表末尾的哨兵
+  // 打开页面时恢复上一次会话：内容从账本拉，而不是存浏览器里
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' })
+    const stored = readLastSession()
+    if (stored === null) {
+      return
+    }
+
+    let cancelled = false
+    void (async () => {
+      try {
+        const ledger = await fetchSessionMessages(stored)
+        if (cancelled) {
+          return
+        }
+        const restored = toBubbles(ledger.messages)
+        setBubbles(restored)
+        nextIdRef.current = restored.length + 1
+        setCompactedCount(ledger.compacted_message_count)
+        setSessionId(stored)
+      } catch (err) {
+        if (cancelled) {
+          return
+        }
+        // 会话已被删除或不属于当前用户：忘掉它，退回空白对话
+        clearLastSession()
+        setError(err instanceof Error ? err.message : '读取历史对话失败')
+      } finally {
+        if (!cancelled) {
+          setLoadingHistory(false)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // 监听滚动，判断用户是否还停在底部；手动往上翻后就不再自动跟随
+  useEffect(() => {
+    const viewport = findViewport(listRef.current)
+    if (viewport === null) {
+      return
+    }
+    const onScroll = (): void => {
+      stickRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 32
+    }
+    viewport.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      viewport.removeEventListener('scroll', onScroll)
+    }
+  }, [hasMessages])
+
+  // 新内容到达（含流式分片）时跟随到底部。不用 scrollIntoView：它会连外层页面
+  // 一起滚，而且 Radix 的 viewport 不对外暴露 ref，只能从 ScrollArea 里找出来直接设
+  // scrollTop。
+  useEffect(() => {
+    if (!stickRef.current) {
+      return
+    }
+    const viewport = findViewport(listRef.current)
+    if (viewport !== null) {
+      viewport.scrollTop = viewport.scrollHeight
+    }
   }, [bubbles])
 
   function patchBubble(id: number, patch: Partial<Bubble>): void {
     setBubbles((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+  }
+
+  /** 每轮结束后同步压缩标记：分隔线位置由后端的账本决定。 */
+  async function refreshCompactionMarker(id: string): Promise<void> {
+    try {
+      const ledger = await fetchSessionMessages(id)
+      setCompactedCount(ledger.compacted_message_count)
+    } catch {
+      // 分隔线只是展示，拉不到就保持原样
+    }
+  }
+
+  /** 【临时】读取模型当前上下文里的摘要。 */
+  async function toggleSummary(): Promise<void> {
+    if (sessionId === null) {
+      return
+    }
+    if (summaryOpen) {
+      setSummaryOpen(false)
+      return
+    }
+    setSummaryOpen(true)
+    setSummaryLoading(true)
+    try {
+      setSummary(await fetchSessionSummary(sessionId))
+    } catch (err) {
+      setSummary(null)
+      setError(err instanceof Error ? err.message : '读取摘要失败')
+    } finally {
+      setSummaryLoading(false)
+    }
   }
 
   async function send(rawText: string): Promise<void> {
@@ -114,6 +269,8 @@ export function ChatPage() {
 
     setError(null)
     setSending(true)
+    // 自己发消息时无条件回到最新位置，哪怕刚才在往上翻
+    stickRef.current = true
 
     const userId = nextIdRef.current
     const replyId = userId + 1
@@ -133,6 +290,7 @@ export function ChatPage() {
       for await (const event of streamChat(body, controller.signal)) {
         if (event.type === 'session') {
           setSessionId(event.session_id)
+          saveLastSession(event.session_id)
         } else if (event.type === 'chunk') {
           setBubbles((prev) =>
             prev.map((item) =>
@@ -141,6 +299,8 @@ export function ChatPage() {
                 : item,
             ),
           )
+        } else if (event.type === 'done') {
+          void refreshCompactionMarker(event.session_id)
         } else if (event.type === 'error') {
           setError(event.content)
         }
@@ -175,10 +335,15 @@ export function ChatPage() {
   function startNewChat(): void {
     abortRef.current?.abort()
     abortRef.current = null
+    stickRef.current = true
     setBubbles([])
     setSessionId(null)
     setError(null)
     setSending(false)
+    setCompactedCount(0)
+    setSummary(null)
+    setSummaryOpen(false)
+    clearLastSession()
   }
 
   return (
@@ -205,7 +370,38 @@ export function ChatPage() {
         </CardAction>
       </CardHeader>
 
-      {bubbles.length === 0 ? (
+      {/* TODO(临时): 开发期用来肉眼确认摘要内容，压缩验收后连同 fetchSessionSummary 一起删除 */}
+      {sessionId === null ? null : (
+        <div className="border-b bg-muted/30 px-5 py-2">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-[10px]">
+              临时
+            </Badge>
+            <span className="text-xs text-muted-foreground">模型当前上下文里的摘要</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto h-7"
+              disabled={summaryLoading}
+              onClick={() => void toggleSummary()}
+            >
+              {summaryLoading ? '读取中…' : summaryOpen ? '收起' : '查看'}
+            </Button>
+          </div>
+          {summaryOpen ? (
+            <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-background p-3 text-[11px] whitespace-pre-wrap text-muted-foreground">
+              {summary ?? '还没有生成摘要：消息条数尚未达到压缩阈值'}
+            </pre>
+          ) : null}
+        </div>
+      )}
+
+      {loadingHistory ? (
+        <div className="grid flex-1 place-items-center px-5 py-5">
+          <Skeleton className="h-4 w-40" />
+          <span className="sr-only">正在读取历史对话…</span>
+        </div>
+      ) : bubbles.length === 0 ? (
         <div className="grid flex-1 place-items-center px-5 py-5 text-center">
           <div>
             <p className="text-sm font-medium">还没有对话</p>
@@ -215,12 +411,19 @@ export function ChatPage() {
           </div>
         </div>
       ) : (
-        <ScrollArea className="flex-1">
+        /* min-h-0 不能省：Radix 的 ScrollArea root 只有 position:relative（自身
+           overflow 仍是 visible），在 column flex 容器里 min-height:auto 会解析成
+           内容高度，导致它撑破卡片（卡片是 overflow-hidden）而不是内部滚动 */
+        <ScrollArea ref={listRef} className="min-h-0 flex-1">
           <div className="flex flex-col gap-4 px-5 py-5">
-            {bubbles.map((bubble) => (
-              <BubbleRow key={bubble.id} bubble={bubble} />
+            {bubbles.map((bubble, index) => (
+              <div key={bubble.id} className="flex flex-col gap-4">
+                <BubbleRow bubble={bubble} />
+                {compactedCount > 0 && index + 1 === compactedCount ? (
+                  <CompactionDivider count={compactedCount} />
+                ) : null}
+              </div>
             ))}
-            <div ref={endRef} aria-hidden="true" />
           </div>
         </ScrollArea>
       )}
@@ -234,11 +437,7 @@ export function ChatPage() {
       ) : null}
 
       <CardFooter className="border-t px-5 py-4">
-        <form
-          noValidate
-          className="w-full"
-          onSubmit={onFormSubmit}
-        >
+        <form noValidate className="w-full" onSubmit={onFormSubmit}>
           <FieldGroup className="gap-2">
             <Field data-invalid={messageError !== undefined}>
               <div className="flex items-end gap-3">
