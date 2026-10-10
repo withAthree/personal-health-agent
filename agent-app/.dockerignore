@@ -1,0 +1,13 @@
+# 构建上下文排除项。
+# .venv 是宿主机上的 Windows 虚拟环境（体积大且容器里不可用），.env 含真实密钥
+# （由 compose 的 env_file 注入，不进镜像），各类缓存目录都不需要进镜像。
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.env
+.agents/
+tests/

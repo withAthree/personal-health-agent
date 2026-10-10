@@ -8,9 +8,9 @@ services:
     container_name: personal-health-agent-pgvector
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
+      POSTGRES_USER: pha
       POSTGRES_PASSWORD: 123456
-      POSTGRES_DB: vec_db
+      POSTGRES_DB: pha
     ports:
       # 宿主机 5432 映射到容器 5432。若宿主机已自带 PostgreSQL 占用 5432，
       # 改为 "5433:5432"，并同步修改应用侧连接端口。
@@ -21,7 +21,7 @@ services:
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
     shm_size: 1g
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d vec_db"]
+      test: ["CMD-SHELL", "pg_isready -U pha -d pha"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -43,6 +43,36 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+
+  backend:
+    build:
+      # 构建上下文是后端目录，Dockerfile 与 .dockerignore 都在那里。
+      context: ../agent-app
+    container_name: personal-health-agent-backend
+    restart: unless-stopped
+    # .env 里放着真实 LLM_API_KEY，只在运行时注入容器，不进镜像也不进仓库。
+    # required: false 是为了在只有 .env.example 的新环境里仍能 up 起来。
+    env_file:
+      - path: ../agent-app/.env
+        required: false
+    environment:
+      # 容器里不能用 localhost：那指向容器自己，必须用 compose 服务名。
+      DATABASE_URL: postgresql+psycopg://pha:123456@db:5432/pha
+      REDIS_URL: redis://:123456@redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      # 开发模式：只挂源码，改代码后 uvicorn reload 自动生效，不用重建镜像。
+      # 绝不能挂整个 ../agent-app，否则宿主机的 Windows .venv 会覆盖容器内
+      # 的 Linux 虚拟环境，依赖全套失效。
+      - ../agent-app/src:/app/src
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # 建表（alembic upgrade head）不属于当前功能，迁移仍需手动执行。
+    command: ["uv", "run", "--no-sync", "agent-app"]
 
 volumes:
   pgvector_data:

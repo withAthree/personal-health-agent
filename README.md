@@ -4,6 +4,10 @@
 
 采用前后端分离的方式开发。
 
+## 项目设计文档（参考）
+
+[设计文档](document/设计文档.md)
+
 ## 前端技术栈
 
 React + Vite + Tailwindcss + Typescript + Echarts
