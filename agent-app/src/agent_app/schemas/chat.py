@@ -14,6 +14,13 @@ class ChatRequest(BaseModel):
         default=None,
         description="已有会话 ID；为空时新建会话",
     )
+    retry: bool = Field(
+        default=False,
+        description=(
+            "重试本会话最后一条用户消息：不新增用户消息，先作废上一轮未完成的回复，"
+            "再重新回答。必须与 session_id 一起使用，此时 message 会被忽略。"
+        ),
+    )
 
 
 class MessageOut(BaseModel):
@@ -25,6 +32,8 @@ class MessageOut(BaseModel):
     role: str
     content: str
     agent_source: str | None = None
+    #: 该助手回复是否被用户主动终止（前端据此显示「已终止」并给出重试入口）。
+    interrupted: bool = False
     created_at: datetime
 
 

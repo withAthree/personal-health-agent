@@ -10,6 +10,7 @@
   ``chat_module.get_agent``，因此断言的是「模型实际收到了什么消息」。
 """
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -203,11 +204,14 @@ async def _send(
     message: str,
     session_id: str | None = None,
     sessions: list[str] | None = None,
+    retry: bool = False,
 ) -> list[dict[str, str]]:
     """发一轮对话并断言成功，返回事件列表（顺手登记会话以便清理）。"""
     payload = {"message": message}
     if session_id is not None:
         payload["session_id"] = session_id
+    if retry:
+        payload["retry"] = True
     status, events = await _post_chat(client, payload, token=token)
     assert status == 200, events
     if session_id is None and sessions is not None:
@@ -657,3 +661,361 @@ def test_drop_trailing_questions_only_trims_unanswered_tail() -> None:
     ]
     trimmed = chat_module._drop_trailing_questions(with_dangling)
     assert [message.content for message in trimmed] == ["问1", "答1"]
+
+
+async def _open_turn(
+    client: httpx.AsyncClient,
+    *,
+    token: str,
+    sessions: list[str],
+    message: str = "睡眠不好怎么办",
+    session_id: str | None = None,
+) -> tuple[chat_module._PendingTurn, chat_module.ChatRequest]:
+    """按接口的顺序建好本轮：先落库用户消息，再拿到流式生成器。"""
+    me = (await client.get("/api/v1/auth/me", headers=_auth(token))).json()
+    request = chat_module.ChatRequest(message=message, session_id=session_id)
+    turn = await chat_module._store_user_message(request, user_id=uuid.UUID(me["id"]))
+    if session_id is None:
+        sessions.append(str(turn.session_id))
+    return turn, request
+
+
+async def _ledger(
+    client: httpx.AsyncClient,
+    *,
+    token: str,
+    session_id: uuid.UUID,
+) -> list[dict[str, Any]]:
+    response = await client.get(
+        f"/api/v1/chat/{session_id}/messages", headers=_auth(token)
+    )
+    assert response.status_code == 200, response.text
+    rows: list[dict[str, Any]] = response.json()["messages"]
+    return rows
+
+
+async def _read_until_chunks(
+    stream: AsyncIterator[dict[str, str]],
+    *,
+    chunks: int,
+) -> list[dict[str, Any]]:
+    """读到指定数量的 chunk 事件就停下（模拟用户在这个时刻点了「停止」）。
+
+    ``_stream_chat`` 产出的是 sse-starlette 的 chunk（``{"data": ...}``），
+    这里顺手解出事件负载。
+    """
+    received: list[dict[str, Any]] = []
+    async for chunk in stream:
+        event = json.loads(chunk["data"])
+        received.append(event)
+        if sum(1 for item in received if item["type"] == "chunk") == chunks:
+            break
+    return received
+
+
+@pytest.mark.parametrize("interrupt", ["close", "cancel"])
+async def test_chat_persists_partial_reply_when_user_stops(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+    interrupt: str,
+) -> None:
+    """用户点「停止」：已经流出去的部分回复要落库并标记为已终止。
+
+    ``close`` 复刻生成器被关闭（Starlette 断流后关闭迭代器），``cancel`` 复刻
+    请求任务被取消（anyio 的 cancel scope），两条路都必须落盘。
+    """
+    build_agent()
+    turn, request = await _open_turn(
+        client, token=account_token, sessions=created_sessions
+    )
+
+    stream = chat_module._stream_chat(turn, request)
+    received = await _read_until_chunks(stream, chunks=2)
+    partial = "".join(e["content"] for e in received if e["type"] == "chunk")
+    assert partial != ""
+    assert _FAKE_ANSWER.startswith(partial)
+
+    if interrupt == "close":
+        await stream.aclose()
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await stream.athrow(asyncio.CancelledError())
+
+    rows = await _ledger(client, token=account_token, session_id=turn.session_id)
+    assert [row["role"] for row in rows] == ["user", "assistant"]
+    assert rows[1]["content"] == partial
+    assert rows[1]["interrupted"] is True
+    assert rows[0]["interrupted"] is False
+
+
+async def test_chat_stores_no_reply_when_stopped_before_first_chunk(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """一个字都没流出去就停止：账本里只留用户提问，不留空的助手消息。"""
+    build_agent()
+    turn, request = await _open_turn(
+        client, token=account_token, sessions=created_sessions
+    )
+
+    stream = chat_module._stream_chat(turn, request)
+    first = json.loads((await anext(stream))["data"])
+    assert first["type"] == "session"
+    await stream.aclose()
+
+    rows = await _ledger(client, token=account_token, session_id=turn.session_id)
+    assert [row["role"] for row in rows] == ["user"]
+    assert rows[0]["interrupted"] is False
+
+
+async def test_chat_skips_interrupted_turn_when_seeding_from_ledger(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """从账本重建上下文时，被终止的那一轮（半截回复 + 无回答的提问）不进模型记忆。"""
+    build_agent()
+    turn, request = await _open_turn(
+        client, token=account_token, sessions=created_sessions
+    )
+
+    stream = chat_module._stream_chat(turn, request)
+    await _read_until_chunks(stream, chunks=2)
+    await stream.aclose()
+
+    # 换一张全新的图（等价于 checkpoint 被清空 / 老会话），走账本重建路径
+    fresh = build_agent()
+    await _send(
+        client,
+        token=account_token,
+        message="第二问",
+        session_id=str(turn.session_id),
+    )
+
+    assert _texts(fresh.last_call) == ["第二问"]
+
+
+async def test_chat_retry_reuses_last_user_message(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """重试不新增用户消息：作废上一轮的半截回复，用账本里的原文重新回答。
+
+    这里直接复刻「用户点了停止」之后的落盘状态（账本一条已终止的半截回复、
+    模型记忆里那条没答完的提问），不依赖假模型被真切断的时机。
+    """
+    harness = build_agent()
+    first = await _send(
+        client, token=account_token, message="第一问", sessions=created_sessions
+    )
+    session_id = first[0]["session_id"]
+
+    turn, _ = await _open_turn(
+        client,
+        token=account_token,
+        sessions=created_sessions,
+        message="第二问",
+        session_id=session_id,
+    )
+    await chat_module._store_assistant_message(
+        turn.session_id, "Cold is usually ", interrupted=True
+    )
+    await harness.graph.aupdate_state(
+        chat_module._thread_config(turn.session_id),
+        {"messages": [HumanMessage(content="第二问")]},
+    )
+
+    rows = await _ledger(client, token=account_token, session_id=turn.session_id)
+    assert [row["role"] for row in rows] == ["user", "assistant", "user", "assistant"]
+    assert rows[3]["interrupted"] is True
+
+    await _send(
+        client,
+        token=account_token,
+        message="第二问",
+        session_id=session_id,
+        retry=True,
+    )
+
+    rows = await _ledger(client, token=account_token, session_id=turn.session_id)
+    # 账本没有变长：没有出现第二条「第二问」，半截回复被完整回答取代
+    assert [row["role"] for row in rows] == ["user", "assistant", "user", "assistant"]
+    assert rows[2]["content"] == "第二问"
+    assert rows[3]["content"] == _FAKE_ANSWER
+    assert rows[3]["interrupted"] is False
+    # 模型看到的是历史 + 被重新提问的原文（悬空提问已被摘掉，不会出现两次）
+    assert _texts(harness.last_call) == ["第一问", _FAKE_ANSWER, "第二问"]
+
+
+async def test_chat_retry_ignores_payload_message(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """一个字都没流出去就停止的轮次：重试用账本里的原文，请求里的 message 被忽略。"""
+    build_agent()
+    turn, request = await _open_turn(
+        client, token=account_token, sessions=created_sessions
+    )
+
+    stream = chat_module._stream_chat(turn, request)
+    first = json.loads((await anext(stream))["data"])
+    assert first["type"] == "session"
+    await stream.aclose()
+
+    events = await _send(
+        client,
+        token=account_token,
+        message="这条文本应该被忽略",
+        session_id=str(turn.session_id),
+        retry=True,
+    )
+    assert [event["type"] for event in events][-1] == "done"
+
+    rows = await _ledger(client, token=account_token, session_id=turn.session_id)
+    assert [row["role"] for row in rows] == ["user", "assistant"]
+    assert rows[0]["content"] == "睡眠不好怎么办"
+    assert rows[1]["content"] == _FAKE_ANSWER
+    assert rows[1]["interrupted"] is False
+
+
+async def test_chat_retry_requires_session(
+    client: httpx.AsyncClient,
+    account_token: str,
+) -> None:
+    """没有 session_id 就没有「最后一条用户消息」可重试。"""
+    response = await client.post(
+        "/api/v1/chat",
+        json={"message": "第一问", "retry": True},
+        headers=_auth(account_token),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "retry_requires_session"
+
+
+async def test_chat_retry_rejects_finished_turn(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """已经答完的轮次不给重试，免得删掉一条完整的回答。"""
+    build_agent()
+    first = await _send(
+        client, token=account_token, message="第一问", sessions=created_sessions
+    )
+
+    response = await client.post(
+        "/api/v1/chat",
+        json={
+            "message": "第一问",
+            "session_id": first[0]["session_id"],
+            "retry": True,
+        },
+        headers=_auth(account_token),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "turn_already_answered"
+
+
+async def test_chat_retry_rejects_session_without_questions(
+    client: httpx.AsyncClient,
+    account_token: str,
+    created_sessions: list[str],
+) -> None:
+    """会话里一条用户消息都没有时，没有可重试的内容。"""
+    me = (await client.get("/api/v1/auth/me", headers=_auth(account_token))).json()
+    async with async_session_maker() as db:
+        empty = ChatSession(user_id=uuid.UUID(me["id"]), title="空会话")
+        db.add(empty)
+        await db.flush()
+        empty_id = empty.id
+        await db.commit()
+    created_sessions.append(str(empty_id))
+
+    response = await client.post(
+        "/api/v1/chat",
+        json={"message": "第一问", "session_id": str(empty_id), "retry": True},
+        headers=_auth(account_token),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "nothing_to_retry"
+
+
+async def test_chat_retry_drops_partial_reply_written_late(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """断流落库比重试请求还晚时，重试落库前仍要把那半截回复清掉。
+
+    真实环境里服务端要等连接断开才发现用户点了停止，那条「已终止」回复可能比
+    重试请求更晚落库，``_retry_turn`` 开头的清理就会扑空。
+    """
+    build_agent()
+    first = await _send(
+        client, token=account_token, message="第一问", sessions=created_sessions
+    )
+    session_id = first[0]["session_id"]
+
+    turn, _ = await _open_turn(
+        client,
+        token=account_token,
+        sessions=created_sessions,
+        message="第二问",
+        session_id=session_id,
+    )
+    # 按接口里的顺序复刻：先 _retry_turn（此时半截回复还没落库），半截回复随后才到
+    me = (await client.get("/api/v1/auth/me", headers=_auth(account_token))).json()
+    retry_request = chat_module.ChatRequest(
+        message="第二问", session_id=session_id, retry=True
+    )
+    retry_turn, effective = await chat_module._retry_turn(
+        retry_request, user_id=uuid.UUID(me["id"])
+    )
+    await chat_module._store_assistant_message(
+        turn.session_id, "半截回复", interrupted=True
+    )
+
+    async for _chunk in chat_module._stream_chat(retry_turn, effective):
+        pass
+
+    rows = await _ledger(client, token=account_token, session_id=retry_turn.session_id)
+    assert [row["role"] for row in rows] == ["user", "assistant", "user", "assistant"]
+    assert [row["interrupted"] for row in rows] == [False, False, False, False]
+    assert rows[3]["content"] == _FAKE_ANSWER
+
+
+async def test_chat_pair_drops_stale_interrupted_reply(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """重试已经答完之后才落库的半截回复，直接丢掉。"""
+    build_agent()
+    first = await _send(
+        client, token=account_token, message="第一问", sessions=created_sessions
+    )
+    session_id = uuid.UUID(first[0]["session_id"])
+    before = await _ledger(client, token=account_token, session_id=session_id)
+
+    await chat_module._store_assistant_message(
+        session_id, "迟到的半截回复", interrupted=True
+    )
+
+    after = await _ledger(client, token=account_token, session_id=session_id)
+    assert [row["role"] for row in after] == ["user", "assistant"]
+    assert after == before

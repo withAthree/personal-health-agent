@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -58,6 +59,12 @@ class Message(UUIDPrimaryKeyMixin, Base):
         JSONB,
         nullable=False,
         server_default=text("'[]'::jsonb"),
+    )
+    #: 助手回复是否被用户主动终止（内容只剩已经流出去的部分）。
+    interrupted: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

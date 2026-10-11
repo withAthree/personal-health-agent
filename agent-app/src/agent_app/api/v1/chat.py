@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
@@ -27,7 +29,7 @@ from langchain_core.messages import (
     RemoveMessage,
 )
 from langchain_core.runnables import RunnableConfig
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -168,9 +170,97 @@ async def _store_user_message(
         return pending
 
 
-async def _store_assistant_message(session_id: uuid.UUID, content: str) -> None:
-    """落库助手回复。"""
+async def _retry_turn(
+    request: ChatRequest,
+    *,
+    user_id: uuid.UUID,
+) -> tuple[_PendingTurn, ChatRequest]:
+    """重试本会话最后一条用户消息。
+
+    不新增用户消息（账本与界面上都只有那一条提问），先把上一轮留下来的半截回复
+    删掉，再用账本里的原文重新问一次。前端只在未完成的轮次上给重试入口，因此
+    这里对已经答完的轮次直接报错，不去删一条完整的回答。
+    """
+    if request.session_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "message": "重试需要带上 session_id",
+                "code": "retry_requires_session",
+            },
+        )
+    session = await _require_session(request.session_id, user_id=user_id)
+    rows = await _load_ledger(session.id)
+    last_user = max(
+        (index for index, row in enumerate(rows) if row.role == "user"),
+        default=None,
+    )
+    if last_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": "这个会话还没有可以重试的问题",
+                "code": "nothing_to_retry",
+            },
+        )
+    trailing = rows[last_user + 1 :]
+    if any(row.role == "assistant" and not row.interrupted for row in trailing):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "这一轮已经答完了，不需要重试",
+                "code": "turn_already_answered",
+            },
+        )
+
+    unfinished = [row.id for row in trailing if row.interrupted]
+    if unfinished:
+        async with async_session_maker() as db:
+            await db.execute(
+                delete(Message)
+                .where(Message.id.in_(unfinished))
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
+        logger.info(
+            "retry_dropped_partial_reply",
+            session_id=str(session.id),
+            dropped=len(unfinished),
+        )
+
+    question = rows[last_user]
+    return (
+        _PendingTurn(session_id=session.id, user_message_id=question.id),
+        request.model_copy(update={"message": question.content}),
+    )
+
+
+async def _store_assistant_message(
+    session_id: uuid.UUID,
+    content: str,
+    *,
+    interrupted: bool = False,
+    drop_trailing_partial: bool = False,
+) -> None:
+    """落库助手回复；被终止时只存已经流出去的那部分并打上标记。
+
+    重试轮传 ``drop_trailing_partial``：落库前把这条提问后面残留的「已终止」
+    回复删掉。被终止的那一轮传 ``interrupted``：若账本末尾已经是回复（说明
+    这次重试已经答完），迟到的半截回复直接丢掉。两者都是为了让「重试不新增
+    消息」在账本上真的成立：断流落库与重试请求谁先到不确定，两种顺序都得收尾。
+    """
     async with async_session_maker() as db:
+        if drop_trailing_partial:
+            dropped = await _drop_trailing_partial_replies(db, session_id)
+            if dropped:
+                logger.info(
+                    "dropped_trailing_partial_reply",
+                    session_id=str(session_id),
+                    dropped=dropped,
+                )
+        elif interrupted and await _ledger_ends_with_reply(db, session_id):
+            logger.info("skipped_stale_interrupted_reply", session_id=str(session_id))
+            return
         session = await db.get(ChatSession, session_id)
         if session is None:
             msg = f"会话不存在: {session_id}"
@@ -182,9 +272,49 @@ async def _store_assistant_message(session_id: uuid.UUID, content: str) -> None:
                 role="assistant",
                 content=content,
                 agent_source=AGENT_SOURCE,
+                interrupted=interrupted,
             )
         )
         await db.commit()
+
+
+async def _recent_rows(db: AsyncSession, session_id: uuid.UUID) -> list[Message]:
+    """在给定事务里读会话消息，按时间正序。"""
+    result = await db.execute(
+        select(Message)
+        .where(Message.session_id == session_id)
+        .order_by(Message.created_at, Message.id)
+    )
+    return list(result.scalars().all())
+
+
+async def _drop_trailing_partial_replies(
+    db: AsyncSession,
+    session_id: uuid.UUID,
+) -> int:
+    """删掉最后一条用户消息之后残留的「已终止」回复，返回删除条数。"""
+    rows = await _recent_rows(db, session_id)
+    last_user = max(
+        (index for index, row in enumerate(rows) if row.role == "user"),
+        default=None,
+    )
+    if last_user is None:
+        return 0
+    stale = [row.id for row in rows[last_user + 1 :] if row.interrupted]
+    if not stale:
+        return 0
+    await db.execute(
+        delete(Message)
+        .where(Message.id.in_(stale))
+        .execution_options(synchronize_session=False)
+    )
+    return len(stale)
+
+
+async def _ledger_ends_with_reply(db: AsyncSession, session_id: uuid.UUID) -> bool:
+    """账本最后一条是不是助手回复。"""
+    rows = await _recent_rows(db, session_id)
+    return bool(rows) and rows[-1].role == "assistant"
 
 
 async def _load_ledger(session_id: uuid.UUID) -> list[Message]:
@@ -205,12 +335,17 @@ def _to_model_messages(
 ) -> list[BaseMessage]:
     """账本行转模型消息。
 
-    ``role='system'`` 的历史行不参与模型上下文：系统提示词由 Agent 统一注入，
-    这里再喂一条只会重复或互相覆盖。
+    两条不参与模型上下文：
+
+    * ``role='system'`` 的历史行：系统提示词由 Agent 统一注入，这里再喂一条
+      只会重复或互相覆盖。
+    * 被终止的半截回复（``interrupted``）：它没说完，喂进去会误导模型以为
+      这轮已经答完了；被摘掉后该轮只剩下没有回答的提问，由
+      ``_drop_trailing_questions`` 一并去掉。
     """
     converted: list[BaseMessage] = []
     for row in rows:
-        if row.id == skip_message_id:
+        if row.id == skip_message_id or row.interrupted:
             continue
         if row.role == "user":
             converted.append(HumanMessage(content=row.content))
@@ -287,7 +422,8 @@ async def _sync_compaction_marker(session_id: uuid.UUID) -> None:
     """把「已被摘要覆盖的消息条数」记到会话上，供前端画分隔线。
 
     覆盖条数 = 账本条数 - checkpoint 里保留的非摘要条数。它只服务展示，
-    略有偏差不会影响正确性，因此不加事务保证。
+    略有偏差不会影响正确性，因此不加事务保证（例如被用户终止的那一轮只留在
+    账本里、不在 checkpoint 里，会让这个数字略微偏大）。
     """
     state = await get_agent().aget_state(_thread_config(session_id))
     messages: list[BaseMessage] = state.values.get("messages", [])
@@ -316,6 +452,44 @@ async def _sync_compaction_marker(session_id: uuid.UUID) -> None:
         if session.compacted_message_count != covered:
             session.compacted_message_count = covered
             await db.commit()
+
+
+async def _persist_reply(
+    session_id: uuid.UUID,
+    reply: str,
+    *,
+    interrupted: bool = False,
+    drop_trailing_partial: bool = False,
+) -> None:
+    """落库助手回复，并同步压缩标记。
+
+    被终止的轮次不碰压缩标记：此时 checkpoint 里的状态是半截的（用户提问还在、
+    回复没有），标记会在下一次正常轮次结束时自己算准。
+    """
+    if reply:
+        await _store_assistant_message(
+            session_id,
+            reply,
+            interrupted=interrupted,
+            drop_trailing_partial=drop_trailing_partial,
+        )
+    if not interrupted:
+        await _sync_compaction_marker(session_id)
+
+
+async def _persist_interrupted(session_id: uuid.UUID, reply: str) -> None:
+    """客户端断开后的落库。
+
+    此时响应通道已经没了，异常只能记日志：要么写成功，要么在日志里留下痕迹。
+    """
+    try:
+        await _persist_reply(session_id, reply, interrupted=True)
+    except Exception as exc:
+        logger.warning(
+            "persist_interrupted_failed",
+            session_id=str(session_id),
+            error=_short_error(exc),
+        )
 
 
 async def _stream_chat(
@@ -359,15 +533,35 @@ async def _stream_chat(
                     "agent_source": AGENT_SOURCE,
                 }
             )
+    except (asyncio.CancelledError, GeneratorExit) as exc:
+        # 用户点了「停止」或者直接关掉页面：客户端断流会取消这个生成器
+        # （LangGraph 的 astream 随之关闭，对上游模型的 HTTP 请求一并取消）。
+        # 已经流出去的文字用户看过了，必须落库并标记为「已终止」，
+        # 否则刷新页面后这段文字就消失了。
+        reply = "".join(collected)
+        logger.info(
+            "chat_interrupted",
+            session_id=str(session_id),
+            chunks=len(collected),
+            chars=len(reply),
+            kind=type(exc).__name__,
+        )
+        # 独立 Task + shield：写库不会再被这次取消打断，
+        # GeneratorExit（生成器被关闭）路径下同样只需要等到它结束。
+        persist = asyncio.create_task(_persist_interrupted(session_id, reply))
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(persist)
+        raise
     except Exception as exc:
         yield _sse({"type": "error", "content": f"模型调用失败：{_short_error(exc)}"})
         return
 
     try:
-        reply = "".join(collected)
-        if reply:
-            await _store_assistant_message(session_id, reply)
-        await _sync_compaction_marker(session_id)
+        await _persist_reply(
+            session_id,
+            "".join(collected),
+            drop_trailing_partial=request.retry,
+        )
     except Exception as exc:
         yield _sse({"type": "error", "content": f"保存回复失败：{_short_error(exc)}"})
         return
@@ -383,10 +577,15 @@ async def chat(
     """流式对话接口（SSE）。
 
     会话归属校验在流开始之前完成：``session_id`` 不存在或不属于当前用户时
-    直接返回 404，不会先建好一个流再报错。
+    直接返回 404，不会先建好一个流再报错。``retry=true`` 时不再写入用户消息，
+    而是重发该会话最后一条用户消息。
     """
-    turn = await _store_user_message(request, user_id=auth.user.id)
-    return EventSourceResponse(_stream_chat(turn, request))
+    if request.retry:
+        turn, effective_request = await _retry_turn(request, user_id=auth.user.id)
+    else:
+        turn = await _store_user_message(request, user_id=auth.user.id)
+        effective_request = request
+    return EventSourceResponse(_stream_chat(turn, effective_request))
 
 
 async def _require_session(session_id: str, *, user_id: uuid.UUID) -> ChatSession:

@@ -15,6 +15,8 @@ export type ChatStreamEvent =
 export interface ChatRequestBody {
   message: string
   session_id?: string
+  /** 重试本会话最后一条用户消息（后端会忽略 message，改用账本里的原文）。 */
+  retry?: boolean
 }
 
 /** 已登录时带上 Bearer 令牌；SSE 走 fetch，需要自己拼请求头。 */
@@ -160,6 +162,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   agent_source: string | null
+  /** 该助手回复是否被用户主动终止（前端据此显示「已终止」并给出重试入口）。 */
+  interrupted: boolean
   created_at: string
 }
 

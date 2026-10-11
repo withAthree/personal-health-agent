@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Bot, Plus, SendHorizontal, Sparkles } from 'lucide-react'
+import { Bot, Plus, RotateCcw, SendHorizontal, Sparkles, Square } from 'lucide-react'
 import { useForm, useWatch } from 'react-hook-form'
 import { z } from 'zod'
 
@@ -36,6 +36,10 @@ interface Bubble {
   content: string
   agentSource: string | null
   pending: boolean
+  /** 回复被用户主动终止：界面标「已终止」，并给这条提问一个重试入口。 */
+  interrupted: boolean
+  /** 回复失败（模型报错、网络中断）：气泡里就是错误文案，并给重试入口。 */
+  failed: boolean
 }
 
 const isAbortError = (error: unknown): boolean =>
@@ -63,7 +67,14 @@ function findViewport(root: HTMLElement | null): HTMLElement | null {
   )
 }
 
-function BubbleRow({ bubble }: { bubble: Bubble }) {
+function BubbleRow({
+  bubble,
+  onRetry,
+}: {
+  bubble: Bubble
+  /** 该轮没有正常答完时的重试回调；为 null 表示不给重试入口。 */
+  onRetry: (() => void) | null
+}) {
   const isUser = bubble.role === 'user'
 
   return (
@@ -80,6 +91,8 @@ function BubbleRow({ bubble }: { bubble: Bubble }) {
             isUser
               ? 'rounded-br-sm bg-primary whitespace-pre-wrap text-primary-foreground'
               : 'rounded-bl-sm bg-muted text-foreground',
+            // 失败回复：把错误文案当作一条回复显示在对话里，而不是另弹一条提示
+            bubble.failed && 'bg-destructive/10 text-destructive',
           )}
         >
           {bubble.pending && bubble.content === '' ? (
@@ -88,13 +101,52 @@ function BubbleRow({ bubble }: { bubble: Bubble }) {
               <Skeleton className="h-4 w-24 bg-foreground/15" />
               <span className="sr-only">正在思考…</span>
             </>
-          ) : isUser ? (
-            bubble.content
+          ) : isUser || bubble.failed ? (
+            <span className="whitespace-pre-wrap">{bubble.content}</span>
           ) : (
             <MarkdownMessage content={bubble.content} />
           )}
         </div>
-        {!isUser && bubble.agentSource !== null ? (
+        {isUser ? (
+          onRetry === null ? null : (
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 px-2 text-[11px] text-muted-foreground"
+                onClick={onRetry}
+                title="重新回答这个问题"
+              >
+                <RotateCcw className="size-3" aria-hidden="true" />
+                重试
+              </Button>
+            </div>
+          )
+        ) : bubble.failed ? (
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-[11px] text-destructive">
+              失败
+            </Badge>
+            {onRetry === null ? null : (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 px-2 text-[11px] text-muted-foreground"
+                onClick={onRetry}
+                title="重新回答这个问题"
+              >
+                <RotateCcw className="size-3" aria-hidden="true" />
+                重试
+              </Button>
+            )}
+          </div>
+        ) : bubble.interrupted ? (
+          <Badge variant="outline" className="text-[11px] text-muted-foreground">
+            已终止
+          </Badge>
+        ) : bubble.agentSource !== null ? (
           <Badge variant="outline" className="text-[11px] text-muted-foreground">
             来源：{bubble.agentSource}
           </Badge>
@@ -129,6 +181,8 @@ function toBubbles(messages: ChatMessage[]): Bubble[] {
     content: message.content,
     agentSource: message.agent_source,
     pending: false,
+    interrupted: message.interrupted,
+    failed: false,
   }))
 }
 
@@ -230,6 +284,30 @@ export function ChatPage() {
     setBubbles((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)))
   }
 
+  /**
+   * 用户主动终止当前回答。
+   *
+   * 这里只中断前端请求：后端在断流分支里会把已经生成的那部分落库并标记为
+   * 已终止，所以刷新页面后这段文字还在，重试也走正常的发消息流程。
+   */
+  function stopStreaming(): void {
+    abortRef.current?.abort()
+  }
+
+  /**
+   * 重试这一轮没答完的回答。
+   *
+   * 不新发消息：丢掉这一轮里没答完的回复气泡，让后端用账本里的原文重新回答一次，
+   * 分片流进新建的那个气泡。
+   */
+  function retryTurn(text: string, index: number): void {
+    if (sending) {
+      return
+    }
+    setBubbles((prev) => prev.slice(0, index + 1))
+    void send(text, { retry: true })
+  }
+
   /** 每轮结束后同步压缩标记：分隔线位置由后端的账本决定。 */
   async function refreshCompactionMarker(id: string): Promise<void> {
     try {
@@ -261,9 +339,35 @@ export function ChatPage() {
     }
   }
 
-  async function send(rawText: string): Promise<void> {
+  // 一轮对话只能有一个重试入口：失败的回复优先拿走按钮，它前面的提问就不再显示。
+  function retryTargetAt(index: number): number | null {
+    const bubble = bubbles[index]
+    if (sending || bubble === undefined) {
+      return null
+    }
+    const next = bubbles[index + 1]
+    // 失败的回复：按钮挂在这条回复上，重试它前面那条提问
+    if (bubble.role === 'assistant' && bubble.failed) {
+      const previous = index > 0 ? bubbles[index - 1] : undefined
+      return previous !== undefined && previous.role === 'user' ? index - 1 : null
+    }
+    if (bubble.role === 'user') {
+      // 后面那条失败的回复已经接管了这个入口
+      if (next !== undefined && next.role === 'assistant' && next.failed) {
+        return null
+      }
+      // 这一轮没答完：后面没消息、后面又是提问，或者回复被终止（用户点了「停止」）
+      if (next === undefined || next.role === 'user' || next.interrupted) {
+        return index
+      }
+    }
+    return null
+  }
+
+  async function send(rawText: string, options?: { retry?: boolean }): Promise<void> {
     const text = rawText.trim()
-    if (text === '' || sending) {
+    const isRetry = options?.retry ?? false
+    if (text === '' || sending || (isRetry && sessionId === null)) {
       return
     }
 
@@ -276,17 +380,35 @@ export function ChatPage() {
     const replyId = userId + 1
     nextIdRef.current = userId + 2
 
-    setBubbles((prev) => [
-      ...prev,
-      { id: userId, role: 'user', content: text, agentSource: null, pending: false },
-      { id: replyId, role: 'assistant', content: '', agentSource: null, pending: true },
-    ])
+    const userBubble: Bubble = {
+      id: userId,
+      role: 'user',
+      content: text,
+      agentSource: null,
+      pending: false,
+      interrupted: false,
+      failed: false,
+    }
+    const replyBubble: Bubble = {
+      id: replyId,
+      role: 'assistant',
+      content: '',
+      agentSource: null,
+      pending: true,
+      interrupted: false,
+      failed: false,
+    }
+    // 重试沿用账本里那条提问，不再新增一条用户消息
+    setBubbles((prev) => (isRetry ? [...prev, replyBubble] : [...prev, userBubble, replyBubble]))
 
     const controller = new AbortController()
     abortRef.current = controller
 
     try {
-      const body = sessionId === null ? { message: text } : { message: text, session_id: sessionId }
+      const body =
+        sessionId === null
+          ? { message: text }
+          : { message: text, session_id: sessionId, retry: isRetry }
       for await (const event of streamChat(body, controller.signal)) {
         if (event.type === 'session') {
           setSessionId(event.session_id)
@@ -302,12 +424,20 @@ export function ChatPage() {
         } else if (event.type === 'done') {
           void refreshCompactionMarker(event.session_id)
         } else if (event.type === 'error') {
-          setError(event.content)
+          // 失败当一条回复显示：气泡里就是错误文案，重试入口在这条回复上
+          patchBubble(replyId, { content: event.content, failed: true })
         }
       }
     } catch (err) {
-      if (!isAbortError(err)) {
-        setError(err instanceof Error ? err.message : '请求失败，请检查后端服务是否已启动')
+      if (isAbortError(err)) {
+        // 用户点了「停止」：保留已经收到的内容，并标上「已终止」
+        patchBubble(replyId, { interrupted: true })
+      } else {
+        // 网络/HTTP 层失败：同样当成一条失败回复，重试入口在那条回复上
+        patchBubble(replyId, {
+          content: err instanceof Error ? err.message : '请求失败，请检查后端服务是否已启动',
+          failed: true,
+        })
       }
     } finally {
       abortRef.current = null
@@ -416,14 +546,25 @@ export function ChatPage() {
            内容高度，导致它撑破卡片（卡片是 overflow-hidden）而不是内部滚动 */
         <ScrollArea ref={listRef} className="min-h-0 flex-1">
           <div className="flex flex-col gap-4 px-5 py-5">
-            {bubbles.map((bubble, index) => (
-              <div key={bubble.id} className="flex flex-col gap-4">
-                <BubbleRow bubble={bubble} />
-                {compactedCount > 0 && index + 1 === compactedCount ? (
-                  <CompactionDivider count={compactedCount} />
-                ) : null}
-              </div>
-            ))}
+            {bubbles.map((bubble, index) => {
+              // 返回要重试的提问下标；非 null 才在这条气泡上显示重试按钮
+              const retryTarget = retryTargetAt(index)
+              return (
+                <div key={bubble.id} className="flex flex-col gap-4">
+                  <BubbleRow
+                    bubble={bubble}
+                    onRetry={
+                      retryTarget === null
+                        ? null
+                        : () => retryTurn(bubbles[retryTarget].content, retryTarget)
+                    }
+                  />
+                  {compactedCount > 0 && index + 1 === compactedCount ? (
+                    <CompactionDivider count={compactedCount} />
+                  ) : null}
+                </div>
+              )
+            })}
           </div>
         </ScrollArea>
       )}
@@ -461,13 +602,14 @@ export function ChatPage() {
                   }}
                 />
                 <Button
-                  type="submit"
+                  type={sending ? 'button' : 'submit'}
                   size="lg"
                   className="h-14 shrink-0 px-5"
-                  disabled={sending || message.trim() === ''}
+                  onClick={sending ? stopStreaming : undefined}
+                  disabled={!sending && message.trim() === ''}
                 >
-                  <SendHorizontal />
-                  {sending ? '回复中…' : '发送'}
+                  {sending ? <Square /> : <SendHorizontal />}
+                  {sending ? '停止' : '发送'}
                 </Button>
               </div>
               <FieldError errors={[messageError]} />

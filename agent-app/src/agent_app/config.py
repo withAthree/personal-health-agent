@@ -30,7 +30,11 @@ class Settings(BaseSettings):
 
     llm_api_key: str = ""
     llm_base_url: str = "https://api.siliconflow.cn/v1"
-    llm_model: str = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+
+    #: 模型名。**这个默认值只是兜底**：只要 .env / 环境变量里配了 LLM_MODEL，
+    #: 就以后者为准（pydantic-settings 优先级：环境变量 > 代码默认值），所以换模型
+    #: 要改 .env 并重启后端容器，光改这里不生效。
+    llm_model: str = "deepseek-ai/DeepSeek-V3.2"
 
     #: 上下文压缩：触发摘要的 token 阈值（按中文口径估算，见
     #: ``llm/context.py`` 的 ``chinese_token_counter``）。
