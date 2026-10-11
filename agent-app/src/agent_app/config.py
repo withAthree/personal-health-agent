@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     #: 之前，把这里从 2000 提到 40000 并不起作用。
     #: ``summary_trigger_tokens`` 是等价的绝对口径，当前未被使用。
     summary_trigger_tokens: int = 40000
-    summary_trigger_fraction: float = 0.8
+    summary_trigger_fraction: float = 0.6
 
     #: 上下文压缩：摘要后保留多少最近内容。**当前生效的是百分比口径**
     #: （``llm/context.py`` 的 ``SUMMARY_KEEP_FRACTION``），保留窗口的 0.1。
