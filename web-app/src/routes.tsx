@@ -3,6 +3,7 @@ import { Navigate, type RouteObject } from 'react-router'
 import { AppLayout } from '@/components/AppLayout'
 import { GuestOnly } from '@/components/GuestOnly'
 import { RequireAuth } from '@/components/RequireAuth'
+import { ChatSessionProvider } from '@/contexts/chat-session-context'
 import { ChatPage } from '@/pages/ChatPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { LoginPage } from '@/pages/LoginPage'
@@ -21,7 +22,10 @@ export const routes: RouteObject[] = [
     path: '/',
     element: (
       <RequireAuth>
-        <AppLayout />
+        {/* 挂在 AppLayout 外层：侧边栏和对话页读的是同一份当前会话 */}
+        <ChatSessionProvider>
+          <AppLayout />
+        </ChatSessionProvider>
       </RequireAuth>
     ),
     children: [

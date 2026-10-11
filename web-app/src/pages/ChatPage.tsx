@@ -8,20 +8,13 @@ import { z } from 'zod'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardAction,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
 import { Field, FieldDescription, FieldError, FieldGroup } from '@/components/ui/field'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { MarkdownMessage } from '@/components/MarkdownMessage'
 import { ThinkingBlock } from '@/components/ThinkingBlock'
+import { useChatSession } from '@/contexts/chat-session-context'
 import {
   fetchSessionMessages,
   fetchSessionSummary,
@@ -33,7 +26,7 @@ import {
   type StreamState,
   type StreamStatus,
 } from '@/lib/api'
-import { clearLastSession, readLastSession, saveLastSession } from '@/lib/session'
+import { clearLastSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
 
 interface Block {
@@ -378,13 +371,14 @@ function withStreamState(
 }
 
 export function ChatPage() {
+  const { sessionId, newChatToken, openSession, startNewChat, refreshSessions } =
+    useChatSession()
   const [bubbles, setBubbles] = useState<Bubble[]>([])
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [sessionId, setSessionId] = useState<string | null>(null)
   const [compactedCount, setCompactedCount] = useState(0)
-  // 初始值直接读本地记忆：有会话才需要在首屏拉历史，避免在 effect 里同步 setState
-  const [loadingHistory, setLoadingHistory] = useState(() => readLastSession() !== null)
+  // 初始值直接看当前会话：有会话才需要在首屏拉历史，避免在 effect 里同步 setState
+  const [loadingHistory, setLoadingHistory] = useState(() => sessionId !== null)
   // TODO(临时): 摘要查看块只用于开发期验收压缩效果，验收后连同状态一起删除
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [summaryLoading, setSummaryLoading] = useState(false)
@@ -398,6 +392,11 @@ export function ChatPage() {
   // 流式分片先攒在这里，每帧只 setState 一次（思考分片实测能到每秒几十片）
   const deltaBufferRef = useRef<DeltaItem[]>([])
   const frameRef = useRef<number | null>(null)
+  // 界面上这批气泡属于哪个会话。用 ref 而不是 state：它只用来判断「要不要重新拉
+  // 账本」，不参与渲染
+  const loadedSessionRef = useRef<string | null>(null)
+  // 上一次的「新对话」计数，用来把「点新对话清空界面」和「会话变化」区分开
+  const lastNewChatTokenRef = useRef(newChatToken)
 
   const composer = useForm<ComposerValues>({
     resolver: zodResolver(composerSchema),
@@ -408,42 +407,54 @@ export function ChatPage() {
   const messageError = composer.formState.errors.message
   const hasMessages = !loadingHistory && bubbles.length > 0
 
-  // 打开页面时恢复上一次会话：内容从账本拉，而不是存浏览器里
+  // 会话变化时把账本贴回来：刷新页面恢复上次会话、点侧边栏切换，以及新对话回到空白
   useEffect(() => {
-    const stored = readLastSession()
-    if (stored === null) {
+    // 流式新建会话时后端会先发 `session` 事件（见 send），此时账本里还没有助手回复，
+    // 重新拉一次反而会把正在生成的气泡抹掉；那种情况下这段已经由事件分支标记过了
+    if (loadedSessionRef.current === sessionId) {
+      return
+    }
+    // 先记账再接数据：下面这一整段都是「换到某个会话」的副作用
+    loadedSessionRef.current = sessionId
+    setBubbles([])
+    setCompactedCount(0)
+    setError(null)
+    setLoadingHistory(sessionId !== null)
+
+    if (sessionId === null) {
       return
     }
 
     let cancelled = false
+    // 这次加载有没有跑完（成功或失败都算）。没跑完就被卸载时要把所有权还回去
+    let finished = false
     void (async () => {
       try {
-        const ledger = await fetchSessionMessages(stored)
+        const ledger = await fetchSessionMessages(sessionId)
         if (cancelled) {
           return
         }
-          const restored = toBubbles(ledger.messages)
-          let nextId = restored.length + 1
-          // 过程块只是增强信息：拿不到（没记录 / Redis 不可用）就只看账本正文
-          let state: StreamState | null = null
-          try {
-            state = await fetchStreamState(stored)
-          } catch {
-            state = null
-          }
-          if (cancelled) {
-            return
-          }
-          let restoredBubbles = restored
-          if (state !== null) {
-            const merged = withStreamState(restored, state, nextId)
-            restoredBubbles = merged.bubbles
-            nextId = merged.nextId
-          }
-          setBubbles(restoredBubbles)
-          nextIdRef.current = nextId
-          setCompactedCount(ledger.compacted_message_count)
-          setSessionId(stored)
+        const restored = toBubbles(ledger.messages)
+        let nextId = restored.length + 1
+        // 过程块只是增强信息：拿不到（没记录 / Redis 不可用）就只看账本正文
+        let state: StreamState | null = null
+        try {
+          state = await fetchStreamState(sessionId)
+        } catch {
+          state = null
+        }
+        if (cancelled) {
+          return
+        }
+        let restoredBubbles = restored
+        if (state !== null) {
+          const merged = withStreamState(restored, state, nextId)
+          restoredBubbles = merged.bubbles
+          nextId = merged.nextId
+        }
+        setBubbles(restoredBubbles)
+        nextIdRef.current = nextId
+        setCompactedCount(ledger.compacted_message_count)
       } catch (err) {
         if (cancelled) {
           return
@@ -452,6 +463,7 @@ export function ChatPage() {
         clearLastSession()
         setError(err instanceof Error ? err.message : '读取历史对话失败')
       } finally {
+        finished = true
         if (!cancelled) {
           setLoadingHistory(false)
         }
@@ -460,8 +472,38 @@ export function ChatPage() {
 
     return () => {
       cancelled = true
+      // 加载还没跑完就被卸载重挂（React StrictMode 在开发期会故意双调用 effect）：
+      // 上面已经记过账，下一个 effect 会以为这批气泡已经贴上而直接跳过，界面就永远
+      // 停在骨架屏上。所以把「这批气泡属于哪个会话」还回去，让它重新拉一次
+      if (!finished) {
+        loadedSessionRef.current = null
+      }
     }
-  }, [])
+  }, [sessionId])
+
+  // 点「新对话」时清空界面。不能只靠 sessionId 的变化来推：网络失败时（还没收到
+  // `session` 事件）它本来就是 null，再点一次在 effect 里看不到任何变化
+  useEffect(() => {
+    if (lastNewChatTokenRef.current === newChatToken) {
+      return
+    }
+    lastNewChatTokenRef.current = newChatToken
+    abortRef.current?.abort()
+    abortRef.current = null
+    deltaBufferRef.current = []
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
+    stickRef.current = true
+    loadedSessionRef.current = null
+    setBubbles([])
+    setError(null)
+    setSending(false)
+    setCompactedCount(0)
+    setSummary(null)
+    setSummaryOpen(false)
+  }, [newChatToken])
 
   // 监听滚动，判断用户是否还停在底部；手动往上翻后就不再自动跟随
   useEffect(() => {
@@ -704,8 +746,12 @@ export function ChatPage() {
           : { message: text, session_id: sessionId, retry: isRetry }
       for await (const event of streamChat(body, controller.signal)) {
         if (event.type === 'session') {
-          setSessionId(event.session_id)
-          saveLastSession(event.session_id)
+          // 先标记这批气泡已经属于新会话，否则下面 sessionId 一变，加载 effect
+          // 就会把正在生成的气泡换成账本里的旧内容
+          loadedSessionRef.current = event.session_id
+          openSession(event.session_id)
+          // 会话刚入库，顺手让侧边栏的「对话记录」多出一条
+          void refreshSessions()
         } else if (event.type === 'run-start') {
           patchBubble(replyId, {
             runId: event.run_id,
@@ -743,6 +789,8 @@ export function ChatPage() {
           )
         } else if (event.type === 'done') {
           void refreshCompactionMarker(event.session_id)
+          // 一轮结束会更新 updated_at，列表顺序跟着变
+          void refreshSessions()
         } else if (event.type === 'error') {
           // 失败当一条回复显示：气泡里就是错误文案，重试入口在这条回复上
           flushDeltas()
@@ -785,48 +833,28 @@ export function ChatPage() {
     void composer.handleSubmit(streamMessage)(event)
   }
 
-  function startNewChat(): void {
-    abortRef.current?.abort()
-    abortRef.current = null
-    deltaBufferRef.current = []
-    if (frameRef.current !== null) {
-      cancelAnimationFrame(frameRef.current)
-      frameRef.current = null
-    }
-    stickRef.current = true
-    setBubbles([])
-    setSessionId(null)
-    setError(null)
-    setSending(false)
-    setCompactedCount(0)
-    setSummary(null)
-    setSummaryOpen(false)
-    clearLastSession()
-  }
-
   return (
-    <Card className="flex h-[calc(100dvh-14rem)] min-h-96 flex-col gap-0 py-0">
-      <CardHeader className="border-b px-5 py-4">
-        <CardTitle className="flex items-center gap-2">
-          <Sparkles className="size-4 text-muted-foreground" aria-hidden="true" />
-          对话
-        </CardTitle>
-        <CardDescription>
-          向健康助手提问，回复会流式逐字显示
+    /* 外层不再套 Card：右侧主内容区本身就是「聊天窗口」，再加一圈卡片边框只是多
+       一层折线，也会让高度算不准 */
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex shrink-0 items-center gap-2 border-b px-5 py-3">
+        <Sparkles className="size-4 text-muted-foreground" aria-hidden="true" />
+        <h1 className="text-sm font-semibold">对话</h1>
+        <p className="text-xs text-muted-foreground">
+          回复会流式逐字显示
           {sessionId === null ? '' : `（会话 ${sessionId.slice(0, 8)}）`}
-        </CardDescription>
-        <CardAction>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={startNewChat}
-            disabled={bubbles.length === 0}
-          >
-            <Plus />
-            新对话
-          </Button>
-        </CardAction>
-      </CardHeader>
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto"
+          onClick={startNewChat}
+          disabled={bubbles.length === 0}
+        >
+          <Plus />
+          新对话
+        </Button>
+      </header>
 
       {/* TODO(临时): 开发期用来肉眼确认摘要内容，压缩验收后连同 fetchSessionSummary 一起删除 */}
       {sessionId === null ? null : (
@@ -905,7 +933,7 @@ export function ChatPage() {
         </div>
       ) : null}
 
-      <CardFooter className="border-t px-5 py-4">
+      <footer className="shrink-0 border-t px-5 py-4">
         <form noValidate className="w-full" onSubmit={onFormSubmit}>
           <FieldGroup className="gap-2">
             <Field data-invalid={messageError !== undefined}>
@@ -945,7 +973,7 @@ export function ChatPage() {
             </Field>
           </FieldGroup>
         </form>
-      </CardFooter>
-    </Card>
+      </footer>
+    </div>
   )
 }

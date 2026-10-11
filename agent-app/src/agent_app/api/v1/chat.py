@@ -48,7 +48,9 @@ from agent_app.models.message import Message
 from agent_app.schemas.chat import (
     ChatRequest,
     MessageOut,
+    SessionListOut,
     SessionMessagesOut,
+    SessionOut,
     SessionSummaryOut,
     StreamStateOut,
 )
@@ -786,6 +788,26 @@ async def chat(
         ms=round((time.perf_counter() - t0) * 1000, 1),
     )
     return EventSourceResponse(_stream_chat(turn, effective_request))
+
+
+@router.get("/chat/sessions", response_model=SessionListOut)
+async def list_chat_sessions(
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> SessionListOut:
+    """返回当前用户的会话列表，最近更新的在前。
+
+    左侧「对话记录列表」的数据源。只按 ``updated_at`` 排序，不带消息正文，
+    消息仍由 ``GET /chat/{session_id}/messages`` 拉取。
+    """
+    async with async_session_maker() as db:
+        result = await db.execute(
+            select(ChatSession)
+            .where(ChatSession.user_id == auth.user.id)
+            # ``updated_at`` 精度可能相同（同一秒内新建多条），用 id 兜底保证顺序稳定
+            .order_by(ChatSession.updated_at.desc(), ChatSession.id.desc())
+        )
+        sessions = result.scalars().all()
+    return SessionListOut(sessions=[SessionOut.model_validate(row) for row in sessions])
 
 
 async def _require_session(session_id: str, *, user_id: uuid.UUID) -> ChatSession:

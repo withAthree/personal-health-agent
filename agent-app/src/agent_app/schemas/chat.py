@@ -38,6 +38,28 @@ class MessageOut(BaseModel):
     created_at: datetime
 
 
+class SessionOut(BaseModel):
+    """左侧「对话记录列表」里的一条会话。
+
+    只带列表渲染需要的元信息，消息正文仍按需走
+    ``GET /chat/{session_id}/messages``。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    title: str | None = None
+    created_at: datetime
+    #: 会话内最后一次写入的时间；列表按它倒序，最近说过的排最前。
+    updated_at: datetime
+
+
+class SessionListOut(BaseModel):
+    """``GET /api/v1/chat/sessions`` 响应体。"""
+
+    sessions: list[SessionOut]
+
+
 class SessionMessagesOut(BaseModel):
     """``GET /api/v1/chat/{session_id}/messages`` 响应体。
 

@@ -242,6 +242,25 @@ export async function fetchSessionMessages(sessionId: string): Promise<SessionMe
   return response.data
 }
 
+/** 左侧「对话记录列表」里的一条会话，对应后端 `SessionOut`。 */
+export interface ChatSessionSummary {
+  id: string
+  title: string | null
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * 拉取当前用户的会话列表，最近更新的在前。
+ *
+ * 对应 `GET /api/v1/chat/sessions`；只返回列表元信息，消息正文仍走
+ * `GET /chat/{session_id}/messages`。
+ */
+export async function fetchSessions(): Promise<ChatSessionSummary[]> {
+  const response = await http.get<{ sessions: ChatSessionSummary[] }>('/chat/sessions')
+  return response.data.sessions
+}
+
 /** 服务端聚合态里的一个过程块，对应后端 `StreamBlockOut`。 */
 export interface StreamStateBlock {
   block_id: string

@@ -624,6 +624,56 @@ async def test_list_messages_rejects_unknown_session(
     assert response.json()["detail"]["code"] == "session_not_found"
 
 
+async def test_list_sessions_returns_recently_updated_first(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """侧边栏「对话记录」：标题取首条提问，最近更新的排在最前。"""
+    build_agent()
+    older = (
+        await _send(
+            client, token=account_token, message="第一问", sessions=created_sessions
+        )
+    )[0]["session_id"]
+    newer = (
+        await _send(
+            client, token=account_token, message="第二问", sessions=created_sessions
+        )
+    )[0]["session_id"]
+    # 回到第一个会话再问一轮，它就成了最近更新的那个
+    await _send(client, token=account_token, message="补问", session_id=older)
+
+    response = await client.get("/api/v1/chat/sessions", headers=_auth(account_token))
+    assert response.status_code == 200, response.text
+    ours = [s for s in response.json()["sessions"] if s["id"] in {older, newer}]
+    assert [s["id"] for s in ours] == [older, newer]
+    assert [s["title"] for s in ours] == ["第一问", "第二问"]
+    assert ours[0]["created_at"] <= ours[0]["updated_at"]
+
+
+async def test_list_sessions_requires_authentication(client: httpx.AsyncClient) -> None:
+    response = await client.get("/api/v1/chat/sessions")
+    assert response.status_code == 401
+
+
+async def test_list_sessions_hides_other_users_sessions(
+    client: httpx.AsyncClient,
+    register_account: Callable[[], Awaitable[str]],
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    build_agent()
+    alice = await register_account()
+    bob = await register_account()
+    await _send(client, token=alice, message="Alice 的问题", sessions=created_sessions)
+
+    response = await client.get("/api/v1/chat/sessions", headers=_auth(bob))
+    assert response.status_code == 200, response.text
+    assert response.json()["sessions"] == []
+
+
 async def test_summary_endpoint_returns_none_before_compaction(
     client: httpx.AsyncClient,
     account_token: str,

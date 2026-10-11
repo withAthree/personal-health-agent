@@ -166,7 +166,8 @@ function ChartCard({
 
 export function DashboardPage() {
   return (
-    <div className="space-y-6">
+    /* 主内容区不再给内边距（对话页要占满整块），所以看板页自己带一圈 */
+    <div className="mx-auto w-full max-w-6xl space-y-6 px-6 py-6">
       <div>
         <h2 className="text-xl font-semibold tracking-tight">健康总览</h2>
         <p className="mt-1 text-sm text-muted-foreground">最近 7 天的睡眠、活动与心血管指标</p>
