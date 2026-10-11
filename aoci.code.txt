@@ -3,3 +3,265 @@
 ===D:/Projects/Software Project/personal-health-agent/===
 .mcp.json[CG7T]: F:注册 aoci MCP server 接入 | R:code:AGENTS.md | A:mcpServers.aoci = {command, args}，仅定义一个 server | S:command 与 --repo 为硬编码 Windows 绝对路径，换机或迁移仓库后必须同步更新，否则 MCP 接入静默失效。
 AGENTS.md[CG8S]: F:定义 Agent 的 AOCI 仓库认知契约 | R:code:.mcp.json | A:- | S:全文位于 <!-- aoci:begin --> 与 <!-- aoci:end --> 之间，属 AOCI 托管区块；init 与后续维护会覆盖该区块内容，项目自定义指令必须写在区块之外。
+.gitignore[CG5S]: F:定义仓库级忽略规则 | R:- | A:通用(19)/编辑器与 IDE(31: .vscode 放行 extensions、launch、settings、tasks)/Python 与虚拟环境(44: .python-version 故意入库)/Node 前端(83)/环境变量与密钥(101: 放行 .env.example)/本地数据与容器产物(110)/本地 AI 工具目录(137) | S:仓库根规则不覆盖 .aoci/ 与 document/frontend/ 的子 .gitignore；.claude/skills 是指向 .agents/skills 的绝对路径软链接，不入库。
+README.md[CG8T]: F:说明项目定位与技术栈 | R:code:document/设计文档.md | A:项目基于 Google DeepMind 2005 年论文《The Anatomy of a Personal Health Agent》的多 Agent 架构、前后端分离/设计文档入口/前端 React+Vite+Tailwind+TypeScript+Echarts/后端 FastAPI+sse-starlette、LangChain+LangGraph、PostgreSQL+SQLAlchemy+pgvector、Redis、PyJWT+argon2、structlog、mypy+pytest+ruff | S:技术栈是选型声明而非实现清单，实际依赖以 agent-app/pyproject.toml 与 web-app/package.json 为准。
+skills-lock.json[CG5S]: F:锁定已安装技能的来源与哈希 | R:code:.agents/skills/deep-agents-core/SKILL.md,code:.agents/skills/langchain-fundamentals/SKILL.md | A:version 1 与 skills 映射，每项含 source、sourceType、skillPath、computedHash | S:computedHash 是整份 SKILL.md 的指纹，改动技能正文后必须重新登记，否则安装器会认为本地文件被篡改。
+
+===D:/Projects/Software/.agents/skills/deep-agents-core/===
+SKILL.md[CG5L]: F:Deep Agents harness 中间件与技能格式权威说明 | R:code:.agents/skills/deep-agents-memory/SKILL.md, code:.agents/skills/deep-agents-orchestration/SKILL.md, code:.agents/skills/ecosystem-primer/SKILL.md | A:`<overview>` 内置中间件清单；`<when-to-use>` 与 create_agent 的对比表；`<middleware-selection>` 选型表（TodoList 默认启用、Filesystem 需 backend、SubAgent、HITL 需 checkpointer、Skills 需技能目录）；`## SKILL.md Format` 的目录结构与 frontmatter；`### What Agents CAN/CANNOT Configure`；多处 WRONG/CORRECT 反例 | S:技能 frontmatter 缺 YAML 元数据不会被加载；本地技能必须配 FilesystemBackend 才读得到；description 太泛则不触发
+
+===D:/Projects/Software/.agents/skills/deep-agents-memory/===
+SKILL.md[CG5M]: F:Deep Agents 记忆后端选型与文件工具 | R:code:.agents/skills/deep-agents-core/SKILL.md | A:四个 backend 的对照表（StateBackend 线程内、StoreBackend 跨线程持久、FilesystemBackend 直读本地盘、CompositeBackend 按路径路由）；FilesystemMiddleware 的 ls/read_file/write_file/edit_file/glob/grep；`<backend-selection>` 选型表；routes={"/memories/": StoreBackend(rt)} 示例 | S:CompositeBackend 按最长前缀匹配路由，/mem/temp/file.txt 落到 StateBackend 而不是 StoreBackend
+
+===D:/Projects/Software/.agents/skills/deep-agents-orchestration/===
+SKILL.md[CG5L]: F:子代理委派、待办规划与人工审批三类编排中间件 | R:code:.agents/skills/deep-agents-core/SKILL.md, code:.agents/skills/deep-agents-memory/SKILL.md | A:SubAgentMiddleware 提供 task 工具、TodoListMiddleware 提供 write_todos、HumanInTheLoopMiddleware 需 checkpointer；create_deep_agent() 默认全含；默认 subagent 名 general-purpose；HITL 中断→检查→Command(resume=...) 三步；`### What Agents CAN Configure` | S:每次 task 调用都是全新会话不记得上一次，必须一次给全指令；自定义 subagent 不继承主 agent 的 skills
+
+===D:/Projects/Software/.agents/skills/deepagents-python-quickstart/===
+SKILL.md[CG5T]: F:引导搭建最小 Python Deep Agent 示例 | R:code:.agents/skills/deep-agents-core/SKILL.md, code:.agents/skills/ecosystem-primer/SKILL.md | A:先与用户确认 provider:model 再动手、在新目录搭建、按官方 quickstart 文档顺序执行的三步引导 | S:禁用 Tavily，必须改用 provider 原生 web search；只需要 provider 的 API key 放进 .env
+
+===D:/Projects/Software/.agents/skills/deepagents-typescript-quickstart/===
+SKILL.md[CG5T]: F:引导搭建最小 TypeScript Deep Agent 示例 | R:code:.agents/skills/deep-agents-core/SKILL.md, code:.agents/skills/ecosystem-primer/SKILL.md | A:先确认 provider:model、新建目录、使用 createDeepAgent 并按官方 quickstart 文档执行的三步引导 | S:需要 Node 22+；禁用 @langchain/tavily，必须改用 provider 原生 web search
+
+===D:/Projects/Software/.agents/skills/ecosystem-primer/===
+SKILL.md[CG5S]: F:LangChain 生态选型总入口与技能路由 | R:code:.agents/skills/langchain-fundamentals/SKILL.md, code:.agents/skills/langgraph-fundamentals/SKILL.md, code:.agents/skills/deep-agents-core/SKILL.md | A:四层分工（Deep Agents harness / LangGraph runtime / LangChain framework / LangSmith 观测）；Step 1 选型决策表与 Tool Profiles、Mixing Layers；Step 2 环境变量；Step 3 文档入口；Step 4 按层路由到下一个技能 | S:编写任何 agent 代码前必须先加载本技能完成选型
+
+===D:/Projects/Software/.agents/skills/eval-engineering/===
+SKILL.md[CG5M]: F:评估工程主管道与参考路由 | R:code:.agents/skills/eval-engineering/references/harbor.md, code:.agents/skills/eval-engineering/references/task-design.md, code:.agents/skills/eval-engineering/references/task-implementation.md, code:.agents/skills/eval-engineering/references/verifier-design.md | A:Flow（调查输入→World Skill→同步草拟 Task Spec 与技能交用户审→Spec2Task→Harbor 审计→回灌→迭代）；术语（Task Spec=Task.md、Task、Harness、Environment）；Reference routing 表 12 条与可复用实现资源；正文第 1-7 章；安全与依赖约束；Complete only when 清单 | S:精确任务真相只保存在 Task.md；Task.md 不得复制或挂载进被评估 agent 的 workspace 或镜像
+
+===D:/Projects/Software/.agents/skills/eval-engineering/agents/===
+openai.yaml[CG3T]: F:技能的宿主展示元数据 | R:code:.agents/skills/eval-engineering/SKILL.md | A:interface 下的 display_name、short_description 与 default_prompt（Use $eval-engineering to ...） | S:-
+
+===D:/Projects/Software/.agents/skills/eval-engineering/assets/task/===
+Task.md.template[CG3T]: F:Task Spec 模板与章节骨架 | R:code:.agents/skills/eval-engineering/SKILL.md | A:`# Task: {{TASK_ID}}` 与 `**Status:** Draft` 头部；章节 Purpose and evidence/Agent input/Relevant agent conditions/Environment/Verification/Fairness and leakage/Open decisions；注释要求与 task.toml 并列 | S:不得复制或挂载进被评估 agent 的 workspace
+
+===D:/Projects/Software/.agents/skills/eval-engineering/assets/world-skill/===
+SKILL.md.template[CG3T]: F:项目 World Skill 模板 | R:code:.agents/skills/eval-engineering/SKILL.md, code:.agents/skills/eval-engineering/references/world-knowledge.md | A:frontmatter 的 `name: {{PROJECT_ID}}-world`；章节 Start here/Knowledge routing/Task Spec guidance/Environment guidance/Data guidance/Verification guidance/Run and audit guidance/Reusable scripts and assets/Existing Task coverage/Known limits and open questions/Update this skill | S:删除无内容章节，不要建空资源目录
+
+===D:/Projects/Software/.agents/skills/eval-engineering/references/===
+calibration.md[CG3T]: F:校准任务难度与公平性 | R:code:.agents/skills/eval-engineering/SKILL.md | A:选证据、读完整 run、逐问题归类、判定难度与公平性四个步骤 | S:不得要求弱强模型阶梯、固定模型数或固定通过率模式
+discovery.md[CG3M]: F:在真实仓库中发现工作与既有评估 | R:code:.agents/skills/eval-engineering/SKILL.md | A:十章流程 Set the scope/Review the repository/Map the Harness and connected systems/Review existing evals/Review traces/Cluster real requests/Review traces in batches/Learn tool and system behavior/Map dependencies and access/Synthesize evidence | S:不同 agent 版本或实质不同部署必须分开保存；未知事实必须标 unknown
+environment-building.md[CG3T]: F:界定 Environment 与 Harness 的职责边界 | R:code:.agents/skills/eval-engineering/SKILL.md, code:.agents/skills/eval-engineering/references/harbor.md | A:职责对照（Environment 负责文件/数据/服务/身份/权限/网络/时钟/初态/副作用/重置，Harness 负责 prompt/模型循环/工具/hooks/记忆/会话/解析）；Live/Frozen/Simulated 三模式表；契约写入 Task.md | S:eval 期间绝不写生产；默认使用受控的本地依赖
+harbor.md[CG3S]: F:Harbor Task 布局与运行契约 | R:code:.agents/skills/eval-engineering/SKILL.md, code:.agents/skills/eval-engineering/references/task-implementation.md | A:目录布局 evals/<suite>/tasks/<task-id>/ 下的 Task.md（对 agent 隐藏）、task.toml、instruction.md、environment/{Dockerfile|docker-compose.yaml}、tests/test.sh 作为 Verifier 入口；Audit package completeness；Run contract；本地默认 Docker | S:升级 Harbor 必须先获用户批准；命令契约以所选版本 CLI --help 为准
+patterns.md[CG5L]: F:跨域 Benchmark 设计模式库 | R:code:.agents/skills/eval-engineering/SKILL.md, code:.agents/skills/eval-engineering/references/task-design.md, code:.agents/skills/eval-engineering/references/environment-building.md | A:Benchmark design index 表（列 Benchmark/Domain/Design worth studying）；按域章节 Automation Environments、Browser and Desktop、Coding、CRM and Knowledge-Work、Multi-Turn and Policy、Terminal、Cross-domain quality checks；每域含 Use this pattern/State and storage/Services, tools, and access/Setup and reset/Strong Task families/Worked Task A,B/Calibrate/Difficulty changes/Sources | S:不得照搬 benchmark 的私有数据、隐藏答案、精确场景或已知限制而不复核
+synthetic-data.md[CG3T]: F:合成数据与自然语言字段的分工 | R:code:.agents/skills/eval-engineering/SKILL.md, code:.agents/skills/eval-engineering/references/task-design.md | A:先用确定性代码与固定 seed 定义并物化 ID/关系/权限/日期/状态/约束/边界，使每次 trial 数据相同；模型只生成需要自然语言的字段；生成与复核分离 | S:禁用答案编码命名、插入顺序、单一明显选择与无关噪声
+task-design.md[CG3S]: F:设计并复核单个 Task Spec | R:code:.agents/skills/eval-engineering/SKILL.md, code:.agents/skills/eval-engineering/assets/task/Task.md.template | A:Find directions/Select one Task/Write the Task Spec（Purpose and evidence、Agent input、Relevant agent conditions、Environment、Verification、Fairness and leakage）/Review with the human/Build a family | S:首个面向用户的设计回复只提出一个 grounded Task
+task-implementation.md[CG3S]: F:Spec2Task 的实施顺序 | R:code:.agents/skills/eval-engineering/references/harbor.md, code:.agents/skills/eval-engineering/references/verifier-design.md | A:Read references at each decision 的决策→参考→产出表；Build in this order（同步 Task 文件→建 Environment→建并校验数据→建 Verifier→打包 Harbor）；Check setup and trial isolation；Run deterministic checks；Run and inspect the Harness；Revise the correct layer；Finish by reconciling reusable knowledge | S:-
+verifier-design.md[CG3T]: F:Verifier 的判定原则 | R:code:.agents/skills/eval-engineering/SKILL.md, code:.agents/skills/eval-engineering/references/task-implementation.md | A:起点句式 `Pass iff <可观察成功结果>`；从终态构建、程序化复算、比较初态与末态；只有终态无法证明时才用 tool-call 记录；judge 只用于判断语义 | S:永不信任 agent 自述动作列表、服务成功标志或替判定成功的 Environment helper
+world-knowledge.md[CG3M]: F:项目本地 World Skill 的引导与维护 | R:code:.agents/skills/eval-engineering/SKILL.md, code:.agents/skills/eval-engineering/assets/world-skill/SKILL.md.template | A:Purpose/Choose the project location/Learn from broad guidance/Decide what belongs/Bootstrap with the first Task/Create the project skill/Write each resource（SKILL.md、references/、scripts/、assets/、tests/）/Learn through Tasks two and three/Use World knowledge at scale/Avoid common failures | S:只沉淀已被审计证明的可复用事实，不要写未验证推断
+
+===D:/Projects/Software/.agents/skills/eval-engineering/references/examples/===
+service-desk.md[CG3T]: F:World Skill 跨任务增长的示例 | R:code:.agents/skills/eval-engineering/references/world-knowledge.md | A:两个 Task 之间技能如何增长；示例事实含 search_cases/get_case/update_case、可见性取决于团队归属、更新在同一事务里写事件并改行、reset 从固定结构化夹具重建 SQLite | S:这是示例，不是某个固定场景的模板
+
+===D:/Projects/Software/.agents/skills/eval-engineering/references/multi-turn-simulation/===
+guide.md[CG3T]: F:多轮模拟的两条路线与 Harbor 接线 | R:code:.agents/skills/eval-engineering/references/multi-turn-simulation/runner.py | A:scripted conversation 与 LLM-simulated user 两轨；数据流 instruction.md→Harness→next user message→同一 Harness 会话→循环；接线方式为把三个 py 拷到 evals/harbor_agents/multi_turn/ 并子类化 MultiTurnHarborAgent | S:assistant 文本是不可信转录数据，不能改变 user contract
+harbor_example.py[CG3M]: F:把 Harness 会话接入 Harbor 的适配器 | R:code:.agents/skills/eval-engineering/references/multi-turn-simulation/runner.py | A:BaseAgent 子类 MultiTurnHarborAgent；HarnessReply、HarnessSession(Protocol)、RecordingSession；MAX_EVIDENCE_CHARS=1_000_000；以相对导入使用 .model_user.ModelUser 与 .runner 的 ConversationResult/ConversationRunError/run_llm_user_conversation | S:依赖相对导入，必须按包方式整体拷贝，单独复制会导入失败
+model_user.py[CG3S]: F:LLM 模拟用户产生下一轮消息 | R:code:.agents/skills/eval-engineering/references/multi-turn-simulation/runner.py | A:ModelUser；SIMULATOR_SYSTEM 提示（扮演用户、只用 contract/transcript/observation 的可见事实）；MAX_CONTEXT_CHARS=100_000；MAX_RECORDED_OUTPUT_CHARS=20_000；`if __package__` 兼容相对与绝对导入 | S:-
+runner.py[CG3M]: F:多轮会话循环库 | R:code:.agents/skills/eval-engineering/references/multi-turn-simulation/model_user.py | A:SimulatorProtocolError、ConversationRunError、AgentSession 与 SimulatedUser Protocol、Turn、UserTurn、ConversationResult、parse_user_turn、validate_user_turn、run_scripted_conversation、run_llm_user_conversation | S:SimulatorProtocolError 表示模拟器失败，不得计为 Harness 失败
+
+===D:/Projects/Software/.agents/skills/eval-engineering/scripts/===
+compare_tool_schemas.py[CG3M]: F:保守比较两套工具 schema | R:code:.agents/skills/eval-engineering/SKILL.md | A:SchemaError(ValueError)；load_json/tool_list/normalize_tool/validate_schema/index_tools/compare_schema/compare/main；argparse CLI | S:不加载也不解析外部 $ref 目标；约束变化只报告供人工复核，不当作语义兼容
+snapshot_sqlite_state.py[CG3S]: F:只读 SQLite 状态快照 | R:code:.agents/skills/eval-engineering/references/verifier-design.md | A:SnapshotError；DENIED_ACTIONS 覆盖 ATTACH/ALTER_TABLE/CREATE_*/DROP_*/DELETE/INSERT/UPDATE/PRAGMA/REINDEX/TRANSACTION/DETACH；authorizer 命中即返回 SQLITE_DENY；load_config/canonical_rows/capture/main；json_value 把 bytes 编成 base64、非有限 float 编成 repr | S:连接即安装 authorizer，写类操作被 SQLITE_DENY 拒绝，快照只能读
+
+===D:/Projects/Software/.agents/skills/langchain-dependencies/===
+SKILL.md[CG7L]: F:给出 LangChain 生态依赖与版本选型 | R:code:.agents/skills/ecosystem-primer/SKILL.md | A:环境要求(19)/框架选择(33)/核心包(48: Python 必装52、编排60、模型供应商67、工具与检索84；TypeScript 106/114/121/135)/最小模板(151: 基础158、RAG194、检索229)/版本与升级(273)/环境变量(296)/常见错误(325) | S:LangChain 1.0 是当前 LTS，0.3 仅维护不用于新项目；langchain-core 必须与其它包一起显式安装；langchain-community 不遵守语义化版本，必须保守固定。
+
+===D:/Projects/Software/.agents/skills/langchain-fundamentals/===
+SKILL.md[CG7L]: F:规定用 create_agent 构建 LangChain agent | R:code:.agents/skills/langchain-middleware/SKILL.md,code:.agents/skills/ecosystem-primer/SKILL.md | A:create_agent 配置(11/15)/工具定义(130)/middleware(174)/结构化输出(195)/模型配置(245)/反例(261-394) | S:创建 agent 必须用 create_agent()，其它旧式 API 已过时；缺 checkpointer 与 thread_id 时 agent 不记忆，未设 recursion_limit 可能死循环。
+
+===D:/Projects/Software/.agents/skills/langchain-middleware/===
+SKILL.md[CG7M]: F:实现人工审批与自定义 middleware | R:code:.agents/skills/langchain-fundamentals/SKILL.md | A:human-in-the-loop(18)/中断检查与批准(90)/编辑参数(138)/拒绝(189)/可配置项(227)/自定义钩子(237)/不可配置项(320)/反例(331-384) | S:批准编辑动作时 edited_action 必须同时含 name 与 args，缺一即恢复失败。
+
+===D:/Projects/Software/.agents/skills/langchain-python-quickstart/===
+SKILL.md[CG5T]: F:按官方文档搭最小 LangChain Python agent | R:code:.agents/skills/langchain-fundamentals/SKILL.md | A:官方 quickstart 链接/weather agent 用例/本地约束 5 条(先问 provider:model、新建独立目录、只用 .env 的 provider key、按需补装 provider 包、跑通即停) | S:不得凭记忆发明 API，须现拉官方文档；默认模型 anthropic:claude-sonnet-5，除用户要求外不引入 LangSmith 与 Tavily。
+
+===D:/Projects/Software/.agents/skills/langchain-rag/===
+SKILL.md[CG7L]: F:实现 RAG 索引、检索与生成 | R:code:.agents/skills/langchain-fundamentals/SKILL.md | A:完整管道(34: 加载46、切分52、嵌入存储56、检索器60、生成63)/文档加载器(117)/文本切分(187)/向量库(209)/检索(286: 打分293、MMR323、元数据过滤337)/可配置项(412)/反例(431-554) | S:Python FAISS loader 走 pickle 反序列化，只能加载自己创建且全程受控的索引目录；索引与查询必须用同一 embedding 模型且维度一致。
+
+===D:/Projects/Software/.agents/skills/langchain-typescript-quickstart/===
+SKILL.md[CG5T]: F:按官方文档搭最小 LangChain TypeScript agent | R:code:.agents/skills/langchain-python-quickstart/SKILL.md | A:官方 quickstart 链接(createAgent)/weather agent 用例/本地约束 5 条与 Python 版一致 | S:需要 Node 22+；不得凭记忆发明 API，须现拉官方文档实现。
+
+===D:/Projects/Software/.agents/skills/langgraph-cli/===
+SKILL.md[CG5S]: F:用 langgraph CLI 管理应用全生命周期 | R:code:.agents/skills/langgraph-fundamentals/SKILL.md | A:适用场景(20)/安装(29)/命令(45: new47、dev59、build75、up86、deploy103、dockerfile150)/langgraph.json 参考(159: 最小Python163、最小JS175、全键187、键说明205)/典型流程(217)/dev 与 up 对比(226)/坑(239) | S:langgraph dev 是无 Docker 的本地热重载，构建镜像与部署分别由 build、up、deploy 承担。
+
+===D:/Projects/Software/.agents/skills/langgraph-decision-models/===
+SKILL.md[CG7M]: F:用决策模型替代 LLM 做路由判断 | R:code:.agents/skills/langgraph-decision-models/references/conversion-playbook.md,code:.agents/skills/langgraph-fundamentals/SKILL.md | A:安装接线(22: 直连Jev38、Gateway SemIf41、Gateway BYOK Jev48)/转换模式(63)/读答案三陷阱(110)/问题措辞决定准确率(135)/审计现有 agent(159)/期望(175)/Send 批处理(191) | S:typesafe/ 前缀路由到 LangSmith workspace secret 的 TYPESAFE_API_KEY；缺该 secret 时所有 typesafe/* 返回 424 Failed Dependency，且 424 早于模型名校验，不能证明 id 存在。
+
+===D:/Projects/Software/.agents/skills/langgraph-decision-models/references/===
+conversion-playbook.md[CG5S]: F:迁移现有 agent 到决策模型的六步审计 | R:code:.agents/skills/langgraph-decision-models/SKILL.md | A:六步(理解现状9/第一性原理21/机会具体化33/经济性46/可否证评估56/交付建议69)/迁移形态(79)/上线(91) | S:探索与生产改动必须分离，第 6 步交付建议之前不得修改 agent 代码。
+
+===D:/Projects/Software/.agents/skills/langgraph-fundamentals/===
+SKILL.md[CG5S]: F:定义 LangGraph 图与状态的核心概念 | R:code:.agents/skills/langgraph-fundamentals/references/python.md,code:.agents/skills/langgraph-fundamentals/references/typescript.md | A:设计思路(20)/状态管理(44)/节点(58)/边(68)/Command(83)/Send(106)/invoke 与 stream(112)/错误处理(133)/边界(150)/实现参考(157) | S:共享概念只留在本文件，语言细节必须查同目录 references 下的 python.md 或 typescript.md。
+
+===D:/Projects/Software/.agents/skills/langgraph-fundamentals/references/===
+python.md[CG5M]: F:给出 LangGraph Python 实现参考 | R:code:.agents/skills/langgraph-fundamentals/SKILL.md | A:状态与 reducer(18/32/54)/节点签名(71)/基础与条件边(97/129)/Command(165)/Send(196/235)/invoke 与 stream(249)/错误处理(291)/常见修复(319: 先 compile321、循环要退出334) | S:列表状态忘记 Annotated 与 operator.add 时后写值会覆盖而非追加；图必须先 compile 再执行。
+typescript.md[CG5M]: F:给出 LangGraph TypeScript 实现参考 | R:code:.agents/skills/langgraph-fundamentals/SKILL.md | A:与 python.md 同构(状态 reducer18、节点77、边97、Command166、Send199、invoke 与 stream253、错误处理299、常见修复327) | S:列表状态没有 reducer 时后写值会覆盖先前值。
+
+===D:/Projects/Software/.agents/skills/langgraph-human-in-the-loop/===
+SKILL.md[CG7L]: F:实现中断、审批与恢复流程 | R:code:.agents/skills/langgraph-persistence/SKILL.md,code:.agents/skills/langgraph-fundamentals/SKILL.md | A:前置要求(17)/基础中断与恢复(27)/审批流程(114)/校验循环(189)/多重中断(257)/中断前副作用须幂等(364)/子图恢复重执行(445)/Command(resume) 警告(483)/修复(489)/禁止项(542) | S:interrupt() 之前的副作用必须幂等，否则每次 resume 都会重复执行；并行节点同时中断时 result["__interrupt__"] 含多个 Interrupt，需按 id 一次性全部恢复。
+
+===D:/Projects/Software/.agents/skills/langgraph-persistence/===
+SKILL.md[CG7L]: F:配置检查点、线程与跨线程记忆 | R:code:.agents/skills/langgraph-human-in-the-loop/SKILL.md | A:checkpointer 装配(30)/线程管理(133)/历史与时间旅行(168)/子图检查点作用域(247: 三模式265、并行命名312)/Store 长期记忆(369)/修复(444) | S:update_state 会经过 reducer 累加，要替换必须用 Overwrite；节点内只能用 runtime 访问 store；不传 thread_id 状态不会持久化。
+
+===D:/Projects/Software/.agents/skills/langgraph-python-quickstart/===
+SKILL.md[CG5T]: F:按官方文档搭最小 LangGraph Python agent | R:code:.agents/skills/langgraph-fundamentals/SKILL.md | A:官方 quickstart 链接/calculator agent 用例/优先 Graph API 而非 Functional API/跳过 IPython 可视化/本地约束 5 条 | S:Claude Sonnet 5+ 不支持 temperature、top_p、top_k；须现拉官方文档而非凭记忆造 API。
+
+===D:/Projects/Software/.agents/skills/langgraph-typescript-quickstart/===
+SKILL.md[CG5T]: F:按官方文档搭最小 LangGraph TypeScript agent | R:code:.agents/skills/langgraph-python-quickstart/SKILL.md | A:官方 quickstart 链接/calculator agent 用例/优先 Graph API/跳过图可视化/本地约束 5 条 | S:需要 Node 22+；Claude Sonnet 5+ 不支持 temperature、top_p、top_k。
+
+===D:/Projects/Software/.agents/skills/managed-deep-agents/===
+SKILL.md[CG7L]: F:在 LangSmith 构建并部署托管 Deep Agent | R:code:.agents/skills/deep-agents-core/SKILL.md,code:.agents/skills/deep-agents-memory/SKILL.md | A:概览(8)/适用场景(16)/首个 agent 访谈流程(22: 问需求31、对照限制49、映射能力55、确认形态75、最小实现87、密钥101、本地跑再部署111)/不能做什么(120)/前置(136)/目录布局(151)/定义 agent(180)/instructions(220)/skills(238)/memory(246)/identity(275)/tools(308)/MCP 与连接(348)/middleware(409)/sandbox(429) | S:MDA 处于 public beta 且只在 US LangSmith Cloud 运行；agent 是一个目录，文件位置决定角色，由 CLI 编译成托管 LangGraph 应用。
+
+===D:/Projects/Software/.agents/skills/swarm/===
+SKILL.md[CG7M]: F:并行分发独立条目并聚合结果 | R:code:.agents/skills/swarm/scripts/index.ts,code:.agents/skills/swarm/scripts/types.ts | A:流程(19)/来源选择(30)/subagentType 时机(96)/指令与上下文(121)/结构化输出(150)/分批(170)/聚合(202)/串联多趟(215)/纯动作任务(241)/过滤(269)/技术说明(280)/API(303: create305、run315、rows329) | S:frontmatter 声明依赖 @langchain/quickjs 代码解释器与 swarm_task 等 PTC 工具，入口是 scripts/index.ts；一行等于一个工作单元。
+
+===D:/Projects/Software/.agents/skills/swarm/scripts/===
+batching.ts[CG5M]: F:分批并打包批量提示 | R:code:.agents/skills/swarm/scripts/interpolate.ts,code:.agents/skills/swarm/scripts/types.ts | A:MAX_BATCH_SIZE=50/createBatches/resolveBatchGroups/wrapSchema/buildBatchPrompt/unpackBatchResults | S:自动分批上限由模块常量 MAX_BATCH_SIZE=50 决定，改批次上限必须同时核对此处。
+executor.ts[CG5M]: F:派发并汇总子 agent 任务 | R:code:.agents/skills/swarm/scripts/types.ts,code:.agents/skills/swarm/scripts/index.ts | A:callTask/dispatch(并发 worker 池)/deduplicateFailures/mergeResult | S:必须用 PTC 专用 swarm_task 而非通用 task 工具，response_schema 与 mode 独立于主 agent；id 与 file 是保留列，结构化输出合并不得覆盖。
+filter.ts[CG3T]: F:按条件筛选表行 | R:code:.agents/skills/swarm/scripts/types.ts,code:.agents/skills/swarm/scripts/utils.ts | A:deepEquals(原始值用严格相等，对象与数组用 JSON 序列化比较)/evaluateFilter | S:null 与 undefined 只与自身相等。
+index.ts[CG8M]: F:暴露 create、run、rows 三个入口 | R:code:.agents/skills/swarm/SKILL.md,code:.agents/skills/swarm/scripts/table.ts | A:create(236)/run(252)/rows(365)/MAX_SUBAGENTS=10 并发预算/统一包装建表与派发 | S:MAX_SUBAGENTS=10 是 run() 的默认并发上限，匹配行数超出且未指定 batchSize 时自动分批。
+interpolate.ts[CG3T]: F:把模板占位符替换为行值 | R:code:.agents/skills/swarm/scripts/utils.ts | A:interpolate(花括号占位符、支持点路径、对象与数组 JSON 序列化)/extractPlaceholders | S:缺失列不会即时失败，而是收集全部后一次性抛出并列出所有无法解析的占位符。
+table.ts[CG7L]: F:在 QuickJS 里持久化表格行 | R:code:.agents/skills/swarm/scripts/types.ts | A:tools 与 __sessionId__ 环境全局声明/_resetForTesting/generateId/tablePath/serializeJsonl/parseJsonl/extractIdFromPath/extractSeqFromPath/pathsToRows/globFiles/readFile/writeFile/createTable(440)/loadTable(513)/saveTable(549) | S:表文件写到 QuickJS 注入的 __sessionId__ 作用域下；tools 是 PTC 层注入的环境全局，vitest 需在 beforeEach 挂 globalThis.tools。
+types.ts[CG5M]: F:定义 swarm 的全部类型契约 | R:code:.agents/skills/swarm/scripts/index.ts | A:SwarmHandle(8)/CreateSource(31)/BatchFn(59)/RunOptions(70)/RunResult(128)/FailureGroup(156)/RowsOptions(179)/SwarmFilter(203)/TaskSpec(265)/TaskResult(303) | S:SwarmHandle 只含元数据，行数据始终留在后端，句柄在多次 eval 间保持稳定。
+utils.ts[CG3T]: F:按点路径读取行内嵌套值 | R:code:.agents/skills/swarm/scripts/table.ts | A:readColumn(按点分段遍历，缺失或非对象即返回 undefined) | S:路径中间任意一段缺失或是数组时返回 undefined，不抛错。
+
+===D:/Projects/Software/agent-app/===
+.dockerignore[CG3T]: F:限定后端镜像构建上下文 | R:code:.gitignore,code:docker/docker-compose.yml | A:排除 .venv/、__pycache__/、*.py[cod]、.mypy_cache/、.pytest_cache/、.ruff_cache/、.env、.agents/、tests/ | S:密钥由 compose 的 env_file 注入，不进镜像；.venv 容器内不可用。
+.env.example[CG5T]: F:给出后端环境变量样例 | R:code:agent-app/src/agent_app/config.py | A:应用(DEBUG、SECRET_KEY)/基础设施(DATABASE_URL、REDIS_URL、BACKEND_PORT)/LLM(LLM_API_KEY、LLM_BASE_URL、LLM_MODEL、LLM_ENABLE_THINKING) | S:样例里的 LLM_MODEL 一旦配上就会覆盖 config.py 的代码默认值，换模型要改 .env 并重启后端容器。
+.python-version[CG3T]: F:固定后端 Python 版本 | R:code:agent-app/pyproject.toml | A:单行 3.14 | S:须与 pyproject requires-python >=3.14 一致，uv 据此选解释器。
+Dockerfile[CG5T]: F:构建开发用后端镜像 | R:code:agent-app/pyproject.toml,code:docker/docker-compose.yml | A:python:3.14-slim 基础镜像/先复制 pyproject.toml 与 uv.lock 装依赖再 COPY 源码/ENV PYTHONPATH=/app/src | S:开发模式下源码由 compose 卷挂载并用 uvicorn reload，改代码无需重建镜像；README.md 必须在场，pyproject 的 readme 指向它。
+alembic.ini[CG5T]: F:配置 Alembic 迁移环境 | R:code:agent-app/alembic/env.py | A:script_location=alembic/prepend_sys_path=src/path_separator=os/日志与格式化器配置 | S:sqlalchemy.url 故意留空，真实连接串由 env.py 从 settings.database_url 注入。
+conftest.py[CG5T]: F:覆盖 pytest 事件循环工厂 | R:code:agent-app/src/agent_app/core/event_loop.py | A:session 级 fixture _asyncio_loop_factory 返回 loop_factory | S:不覆盖该 fixture 时 Windows 的 ProactorEventLoop 驱动不了 psycopg，所有数据库测试报 InterfaceError。
+pyproject.toml[CG8S]: F:声明后端依赖与工具链配置 | R:code:agent-app/uv.lock,code:agent-app/src/agent_app/config.py | A:project 元数据(requires-python>=3.14、依赖清单、agent-app 脚本入口)/ruff(line-length 88、src=["src"]、known-first-party=["agent_app"]、排除 alembic/versions 与 .agents、.claude)/mypy 全 strict/pytest asyncio_mode=auto 与 testpaths/依赖组 dev | S:ruff 的 src 与 known-first-party 是必需的：仓库根有同名 alembic 目录，不声明会把一方包误判并打乱 import 分组；mypy 开了 disallow_untyped_defs，新增函数必须全量注解。
+uv.lock[CG5L]: F:锁定后端依赖解析结果 | R:code:agent-app/pyproject.toml,code:agent-app/Dockerfile | A:version 1/revision 3、requires-python >=3.14、resolution-markers 分 >=3.15 与 <3.15 两支、119 个 [[package]] 条目(含可编辑根包 agent-app) | S:由 uv 生成，手改无效；新增依赖要走 uv add，让 pyproject 与锁文件同时更新，Dockerfile 复制这两份文件。
+
+===D:/Projects/Software/agent-app/alembic/===
+env.py[CG7T]: F:执行迁移连接与元数据绑定 | R:code:agent-app/alembic.ini,code:agent-app/src/agent_app/config.py,code:agent-app/src/agent_app/core/event_loop.py | A:include_object 过滤器/run_migrations_offline/do_run_migrations/run_async_migrations(异步引擎，asyncio.run 传 loop_factory)/离线与在线入口分支 | S:include_object 必须排除 checkpoint 前缀，否则 autogenerate 会生成 DROP TABLE，把 LangGraph 记忆表连同模型记忆一起删掉。
+script.py.mako[CG3T]: F:生成新迁移文件骨架 | R:code:agent-app/alembic/env.py | A:revision、down_revision、branch_labels、depends_on 标注与 upgrade、downgrade 空实现 | S:alembic/versions 已从 ruff 排除，模板生成的未使用 import 不会报错。
+
+===D:/Projects/Software/agent-app/alembic/versions/===
+21e09caeda22_add_users_and_session_ownership.py[CG7T]: F:新增用户表与会话归属 | R:code:agent-app/src/agent_app/models/user.py,code:agent-app/src/agent_app/models/chat_session.py | A:建 users 表(phone 唯一索引、password_hash、nickname)并给 chat_sessions 加 user_id 外键(ON DELETE CASCADE)/downgrade 逆序回滚 | S:user_id 是 NOT NULL 且无默认值，upgrade 先 DELETE FROM chat_sessions 清空单租户旧数据，messages 靠级联一并删除。
+6627af21c4cc_add_session_compaction_marker.py[CG3T]: F:给会话加压缩标记列 | R:code:agent-app/src/agent_app/api/v1/chat.py,code:agent-app/alembic/env.py | A:chat_sessions 新增 compacted_message_count(Integer、server_default 0、非空) | S:自动生成误判 checkpoint_* 表待删，已手动剔除只留新增列。
+7e2603d8fe14_create_chat_tables.py[CG7T]: F:创建会话与消息两张表 | R:code:agent-app/src/agent_app/models/message.py,code:agent-app/alembic/env.py | A:chat_sessions(title、cuj_category、时间戳)/messages(session_id 索引、role CHECK、tool_calls 与 charts JSONB、referenced_files UUID[]、级联删除) | S:这是唯一的 base 迁移(down_revision 为空)；downgrade 直接 drop 两张表，等于丢掉全部对话数据。
+bbc4e5fae92a_add_messages_interrupted_flag.py[CG3T]: F:给消息加已终止标记 | R:code:agent-app/src/agent_app/api/v1/chat.py | A:messages 新增 interrupted(Boolean、server_default false、非空) | S:interrupted 默认 false，用来标记半截回复，使重试不新增用户消息。
+
+===D:/Projects/Software/agent-app/src/agent_app/===
+__init__.py[CG5T]: F:提供 agent-app 启动命令入口 | R:code:agent-app/src/agent_app/core/event_loop.py,code:agent-app/src/agent_app/main.py | A:main() 调 uvicorn.run(host 0.0.0.0、reload、loop="agent_app.core.event_loop:loop_factory") | S:uvicorn 必须显式指定 loop 工厂，Windows 上默认循环跑不了 psycopg 异步驱动。
+config.py[CG7T]: F:集中声明后端运行期配置 | R:code:agent-app/.env.example,code:agent-app/src/agent_app/llm/context.py | A:debug、secret_key、database_url、redis_url、backend_port、access_token_expire_hours/llm 与 summary 系列的阈值与模型窗口设置/模块级单例 settings | S:llm_model 的代码默认值只是兜底，.env 或环境变量配了就以后者为准，光改这里不生效；llm_max_input_tokens 必须能填进模型 profile，否则摘要中间件构造期就抛 ValueError。
+main.py[CG7T]: F:组装 FastAPI 应用与生命周期 | R:code:agent-app/src/agent_app/core/logging.py,code:agent-app/src/agent_app/llm/agent.py | A:lifespan 内 open_checkpointer 与 close_checkpointer、CORSMiddleware(allow_origins=["*"]、allow_credentials=False)、include_router(auth、chat)、GET /health | S:checkpoint 表由 LangGraph 自建，Alembic 管不到，必须在 lifespan 里初始化；allow_credentials 只能为 False，浏览器不接受通配来源与凭据并存。
+
+===D:/Projects/Software/agent-app/src/agent_app/api/===
+__init__.py[CG1T]: F:标记 HTTP 接口层包 | R:- | A:- | S:-
+deps.py[CG7T]: F:提供鉴权依赖与当前用户 | R:code:agent-app/src/agent_app/core/security.py,code:agent-app/src/agent_app/core/token_store.py,code:agent-app/src/agent_app/core/database.py | A:AuthContext(user、jti、expires_at)/get_auth_context(解析 Bearer、解码、查吊销名单、查用户)/get_current_user/统一 401 与 503 构造 | S:吊销名单不可用时 fail-closed 返回 503 而不是放行；401 的 detail 里带机器可读 code，前端据此判断是否跳登录。
+
+===D:/Projects/Software/agent-app/src/agent_app/api/v1/===
+__init__.py[CG1T]: F:标记 API v1 包 | R:- | A:- | S:-
+auth.py[CG7S]: F:实现注册登录与当前用户接口 | R:code:agent-app/src/agent_app/api/deps.py,code:agent-app/src/agent_app/core/security.py,code:agent-app/src/agent_app/schemas/auth.py | A:POST /api/v1/auth/register(201，注册即签发令牌)/POST login/POST logout(204，写入吊销名单)/GET me/各错误 detail 的机器可读 code | S:手机号不存在与密码错误返回同一个 401，避免暴露号码是否已注册；并发注册同一号码由唯一索引兜底转 409。
+chat.py[CG9L]: F:提供 SSE 流式对话与会话历史接口 | R:code:agent-app/src/agent_app/core/stream_state.py,code:agent-app/src/agent_app/llm/agent.py,code:agent-app/src/agent_app/llm/context.py,code:agent-app/src/agent_app/models/message.py | A:POST /chat(EventSourceResponse；事件 session→[reset]→block-start、block-delta、block-stop→[compaction]→done，失败以 error 收尾)/GET chat/sessions/GET chat/{id}/messages/GET chat/{id}/stream-state/GET chat/{id}/summary(临时)；内部 _store_user_message、_retry_turn、_load_ledger、_to_model_messages、_initial_messages、_sync_compaction_marker、_persist_reply、_stream_chat | S:只转发 langgraph_node 为 model 的分片，摘要那次 LLM 调用的分片必须滤掉，否则摘要正文会漏进用户气泡；thinking 永不落库也不回喂模型；客户端断流时落库必须放在独立 task 里并用 shield 等待，直接 await 会被取消信号打断，丢掉已流出的半截回复。
+
+===D:/Projects/Software/agent-app/src/agent_app/core/===
+__init__.py[CG1T]: F:标记基础设施包 | R:- | A:- | S:-
+database.py[CG7T]: F:创建数据库引擎与会话工厂 | R:code:agent-app/src/agent_app/llm/agent.py | A:engine(pool_pre_ping)/async_session_maker(expire_on_commit=False)/to_libpq_dsn/get_db 提供请求级会话并在异常时回滚 | S:to_libpq_dsn 必须把 postgresql+psycopg:// 换成 postgresql://，psycopg 自己解析不了 SQLAlchemy 的方言前缀。
+event_loop.py[CG5T]: F:按平台选择事件循环 | R:code:agent-app/conftest.py,code:agent-app/src/agent_app/llm/agent.py | A:loop_factory(use_subprocess) → win32 返回 SelectorEventLoop，其它平台 new_event_loop | S:psycopg 异步驱动依赖 add_reader 与 add_writer，Windows 默认的 ProactorEventLoop 没有这两个方法。
+logging.py[CG5T]: F:配置 structlog 全局日志 | R:code:agent-app/src/agent_app/main.py | A:configure_logging(debug)；DEBUG 时 ConsoleRenderer 与 debug 级，否则 JSONRenderer 与 info 级 | S:DEBUG=true 会打印每次模型调用收到的消息内容，生产环境必须关掉。
+nickname.py[CG3T]: F:注册时生成随机昵称 | R:code:agent-app/src/agent_app/api/v1/auth.py | A:_ADJECTIVES 与 _NOUNS 各 16 个词，generate_nickname 用 secrets.choice 拼成「形容词的noun」 | S:昵称不保证唯一，users.nickname 上没有任何唯一约束。
+redis.py[CG5T]: F:提供进程内共享 Redis 客户端 | R:code:agent-app/src/agent_app/core/token_store.py,code:agent-app/src/agent_app/core/stream_state.py | A:get_redis 以 lru_cache(maxsize=1) 缓存，按 settings.redis_url 建客户端 | S:lru_cache 让连接串只在首次调用生效，测试里改了配置必须清缓存。
+security.py[CG8S]: F:签发校验 JWT 与哈希密码 | R:code:agent-app/src/agent_app/core/token_store.py,code:agent-app/src/agent_app/api/deps.py | A:ALGORITHM HS256/TOKEN_TYPE access/TokenError 与 TokenExpiredError/TokenClaims(user_id、jti、expires_at)/hash_password 与 verify_password(argon2)/create_access_token/decode_access_token 与 _to_claims 字段收敛 | S:令牌无状态，退出登录立即生效依赖 token_store 的 Redis 吊销名单；哈希串损坏时 verify 返回 False 而不抛 500；payload 缺字段、type 不符或 sub 非 UUID 都按 TokenError 处理。
+stream_state.py[CG7S]: F:在 Redis 保存本轮过程块 | R:code:agent-app/src/agent_app/api/v1/chat.py,code:agent-app/src/agent_app/core/token_store.py | A:StreamBlock 与 StreamState 数据类/to_dict 与 from_dict/load/_save/StreamStateWriter 的 flush 与 mark_dirty 节流 | S:故障策略与 token_store 相反：必须 fail-soft，Redis 异常只记 warning 并返回空，绝不抛给调用方；TTL 30 分钟，delta 每 0.2 秒最多落一次，块边界与结束必须强制 flush。
+token_store.py[CG7T]: F:用 Redis 维护令牌吊销名单 | R:code:agent-app/src/agent_app/core/redis.py,code:agent-app/src/agent_app/core/security.py | A:键前缀 auth:revoked:/revoke_token(TTL 取令牌剩余有效期，已过期直接返回)/is_revoked/TokenStoreUnavailableError | S:Redis 不可用时抛 TokenStoreUnavailableError 由调用方转 503，宁可拒绝服务也不让已登出的令牌复活。
+
+===D:/Projects/Software/agent-app/src/agent_app/llm/===
+__init__.py[CG1T]: F:标记 LLM 接入层包 | R:- | A:- | S:-
+agent.py[CG8T]: F:组装带检查点与摘要的 Agent | R:code:agent-app/src/agent_app/llm/client.py,code:agent-app/src/agent_app/llm/context.py,code:agent-app/src/agent_app/core/database.py | A:get_checkpointer(AsyncPostgresSaver 配 AsyncConnectionPool，autocommit 与 prepare_threshold=0)/get_agent(create_agent 加摘要中间件与 system_prompt)/open_checkpointer/close_checkpointer | S:checkpointer 必须在事件循环内首次调用，构造时会绑定 running loop；checkpoint 只是可重建的缓存，账本才是唯一真相，老会话或表被清时下一轮从账本重建。
+call_log.py[CG5S]: F:记录模型调用入参与延迟 | R:code:agent-app/src/agent_app/llm/agent.py,code:agent-app/src/agent_app/core/logging.py | A:ModelCallLogger(BaseCallbackHandler) 的 on_chat_model_start、on_llm_new_token、on_llm_end、on_llm_error；_is_summary、_preview(400 字符截断) | S:正文与计时事件都走 logger.debug，只在 DEBUG=true 时输出；节点名在 on_chat_model_start 里自存，因为 on_llm_new_token 拿不到它。
+client.py[CG9S]: F:封装硅基流动 LLM 客户端 | R:code:agent-app/src/agent_app/config.py,code:agent-app/src/agent_app/llm/context.py,code:agent-app/src/agent_app/llm/agent.py | A:SYSTEM_PROMPT、_is_terminal_stream_chunk、ChatOpenAIWithReasoning._convert_chunk_to_generation_chunk、get_llm 与 get_summary_llm(lru_cache 单例) | S:provider 每个流式分片都带累积 usage，而 AIMessageChunk 合并时相加，必须只保留收尾分片的 usage，否则放大后的 total_tokens 会让摘要每轮触发；思考内容只能塞进 additional_kwargs，白名单转发的 _convert_message_to_dict 不会把它回喂模型。
+context.py[CG8S]: F:配置摘要中间件与中文计数 | R:code:agent-app/src/agent_app/llm/client.py,code:agent-app/src/agent_app/config.py | A:SUMMARY_TRIGGER_TOKENS/FRACTION、SUMMARY_KEEP_TOKENS/FRACTION、CHINESE_CHARS_PER_TOKEN、SUMMARY_PROMPT、chinese_token_counter、build_summarization_middleware(trigger、keep) | S:中文估算必须显式传 chars_per_token=2.0，框架默认 4.0 是按英文校准的；走百分比口径要求模型带 profile.max_input_tokens，注入假模型时要自己补，否则构造期抛 ValueError。
+
+===D:/Projects/Software/agent-app/src/agent_app/models/===
+__init__.py[CG7T]: F:注册 ORM 模型供迁移发现 | R:code:agent-app/src/agent_app/models/base.py,code:agent-app/src/agent_app/models/message.py | A:导出 Base、ChatSession、Message、User 并在导入时完成注册 | S:新增模型必须在这里导入，否则 Base.metadata 里没有它，alembic autogenerate 不会生成对应表。
+base.py[CG7T]: F:提供 ORM 基类与公共 Mixin | R:code:agent-app/src/agent_app/models/chat_session.py | A:Base(DeclarativeBase)、UUIDPrimaryKeyMixin.id(UUID 主键、应用侧 uuid.uuid4)、TimestampMixin.created_at 与 updated_at(server_default func.now()、updated_at 带 onupdate) | S:两个时间戳默认值都在数据库侧，新建对象 flush 前读不到；updated_at 的 onupdate 只在 ORM 发 UPDATE 时生效，手写 SQL 不会自动刷新。
+chat_session.py[CG7T]: F:定义对话会话表模型 | R:code:agent-app/src/agent_app/models/message.py,code:agent-app/src/agent_app/api/v1/chat.py | A:chat_sessions 列 user_id(FK users.id、CASCADE、index)、title、cuj_category、compacted_message_count；messages 关系 cascade delete-orphan、order_by created_at | S:compacted_message_count 只供前端画压缩分隔线，模型上下文在 checkpoint 里，改它不影响摘要行为。
+message.py[CG8T]: F:定义消息账本表模型 | R:code:agent-app/src/agent_app/models/chat_session.py,code:agent-app/src/agent_app/api/v1/chat.py | A:messages 列 session_id(FK CASCADE、index)、role(String20 加 CHECK user/assistant/system)、content(Text)、agent_source、tool_calls 与 charts(JSONB 默认 [])、referenced_files(UUID[])、interrupted、created_at | S:这是唯一的对话真相来源，摘要结果只进 checkpoint 不回写；thinking 永不落库，tool_calls 与 charts 也无人写入，改列语义前先确认没有别的读取方。
+user.py[CG7T]: F:定义用户表模型 | R:code:agent-app/src/agent_app/schemas/auth.py | A:users 列 phone(String20、unique、index)、password_hash(String255)、nickname(String50) | S:手机号即账号，唯一索引是并发注册的唯一兜底；密码只存 argon2 哈希，任何明文写入都是错误。
+
+===D:/Projects/Software/agent-app/src/agent_app/schemas/===
+__init__.py[CG1T]: F:标记请求响应模型包 | R:- | A:- | S:-
+auth.py[CG7T]: F:定义认证请求与响应模型 | R:code:agent-app/src/agent_app/api/v1/auth.py | A:PHONE_PATTERN(^1[3-9]\d{9}$)、normalize_phone(去空白连字符与 +86/86 前缀)、_Credentials(phone、password 8-64)、RegisterRequest、LoginRequest、UserOut(from_attributes)、TokenResponse(access_token、token_type、expires_at、user) | S:normalize_phone 挂在 field_validator 的 mode="before"，长度与正则校验看到的已经是去掉国家码的值；UserOut 刻意不带 password_hash。
+chat.py[CG8S]: F:定义聊天接口协议模型 | R:code:agent-app/src/agent_app/api/v1/chat.py,code:agent-app/src/agent_app/core/stream_state.py | A:ChatRequest(message、session_id、retry)、MessageOut、SessionOut 与 SessionListOut、SessionMessagesOut、SessionSummaryOut(临时)、StreamKind 与 StreamBlockStatus 与 StreamStatus、StreamBlockOut(block_id、index、step、kind、text、status、meta)、StreamStateOut | S:这里的 Literal 是 SSE 协议的唯一事实来源，新增事件类型必须同时改这里、chat.py 的 _sse 负载与前端 lib/api.ts 的解析联合；block-delta 只引用 block_id 不引用 index，因为 reset 会让 index 复用。
+
+===D:/Projects/Software/docker/===
+docker-compose.yml[CG7T]: F:编排数据库缓存与后端服务 | R:code:agent-app/Dockerfile,code:docker/postgres/init.sql,code:agent-app/.env.example | A:db(pgvector/pgvector:pg16、卷 pgvector_data、健康检查 pg_isready)、redis(redis:7-alpine、requirepass 123456)、backend(build ../agent-app、端口 8000、依赖两个健康检查、命令 uv run --no-sync agent-app) | S:只挂 ../agent-app/src，不能挂整个后端目录，否则宿主机的 Windows .venv 会盖掉容器内环境；容器里连数据库要用服务名，localhost 指容器自己。
+
+===D:/Projects/Software/docker/postgres/===
+init.sql[CG5T]: F:首次初始化开启 vector 扩展 | R:code:docker/docker-compose.yml | A:CREATE EXTENSION IF NOT EXISTS vector | S:只在 pgvector_data 卷为空时由 docker-entrypoint-initdb.d 跑一次，数据卷已存在时改这里不生效，必须先 docker compose down -v。
+
+===D:/Projects/Software/document/===
+中间过程可见-开发计划.md[CG7S]: F:拆解中间过程可见的分期任务 | R:code:document/中间过程可见-设计方案.md,code:agent-app/src/agent_app/api/v1/chat.py | A:总览表(Phase 0-5 与依赖)、T0.1 思考参数实测、T0.2 TTFT 埋点、T1.1-T1.6 后端块事件流、T2.1-T2.6 前端渲染与回放、后续期登记、文件改动清单、验证方式 | S:本次只交付 Phase 0-2，Phase 3-5 仅登记；回归红线是 messages 表不出现新语义行、摘要不进用户气泡、中止重试行为不变、Redis 停掉仍能对话。
+中间过程可见-设计方案.md[CG7L]: F:冻结中间过程可见协议 v1 | R:code:document/中间过程可见-开发计划.md,code:agent-app/src/agent_app/schemas/chat.py,code:agent-app/src/agent_app/core/stream_state.py | A:现状与账本不变量、五家产品调研、协议 v1(信封 block_id 与 index 与 step、事件清单、kind 枚举、reset、忽略未知类型)、存储三层与 Redis 结构、故障策略、后端状态机与前端实现、风险 | S:传输沿用 data 行内带 type，不用 SSE event 行；stream_state 必须 fail-soft，而 token_store 是 fail-closed，两者相反不能统一；本期只解决看得见，不解决断线接得住。
+设计文档.md[CG8L]: F:定义 PHA 整体架构与规划 | R:code:document/中间过程可见-设计方案.md,code:agent-app/src/agent_app/api/v1/chat.py,code:agent-app/src/agent_app/models/message.py | A:项目概述与论文四大 CUJ、系统架构与 Orchestrator 流程、LangGraph 状态与 RAG 设计、技术栈、数据库 ER 与表结构、API 清单与核心接口、三个子智能体设计、前端 UI 与组件清单、数据流、目录结构、分期开发计划、环境变量清单、风险 | S:这是规划文档而非现状快照：多智能体、RAG、文件上传等章节尚未实现，前端组件清单里多数组件也不存在，判断现状一律以源码为准。
+
+===D:/Projects/Software/web-app/===
+.env.example[CG5T]: F:给出前端环境变量模板 | R:code:web-app/README.md,code:web-app/vite.config.ts | A:VITE_API_BASE_URL(留空走 vite 代理)、VITE_APP_TITLE | S:只有 VITE_ 前缀的变量会注入前端运行时；模板要复制成 .env.local，而 .gitignore 只放行 .env.example。
+.gitignore[CG3T]: F:排除前端构建产物与缓存 | R:code:web-app/README.md | A:忽略 node_modules、dist、dist-ssr、*.local、.env 与 .env.*(放行 .env.example)、编辑器与日志文件、.eslintcache、*.tsbuildinfo | S:!.env.example 例外必须保留，否则模板会被 .env.* 规则一并挡在版本库外。
+README.md[CG7T]: F:说明前端栈与开发约定 | R:code:web-app/package.json,code:web-app/components.json,code:web-app/src/lib/echarts.ts | A:技术栈与版本表、快速开始脚本、目录结构、路径别名、新增图表三处同步、样式与 TypeScript 约定、版本约束、构建产物体积 | S:TypeScript 锁在 ~6.0.3 不能升 7.x，typescript-eslint 的 peer 上限会让 npm install 报 ERESOLVE；加 ECharts 组件要同改三处。
+components.json[CG3T]: F:记录 shadcn CLI 生成配置 | R:code:web-app/src/index.css | A:style radix-nova、rsc false、tsx true、tailwind.css 指向 src/index.css、iconLibrary lucide、别名 components/utils/ui/lib/hooks | S:改路径别名要同步改 vite.config.ts 与 tsconfig.app.json。
+eslint.config.js[CG5T]: F:配置前端类型感知 lint | R:code:web-app/package.json,code:web-app/tsconfig.app.json | A:globalIgnores(dist、coverage、node_modules)、typescript-eslint recommendedTypeChecked、react-hooks recommended-latest、react-refresh vite、projectService 与 tsconfigRootDir，对 components/ui 与 contexts 关掉 only-export-components | S:规则不是可选风格：projectService 需要 TS 工程，npm run build 会先跑 tsc -b，所以 lint 过的代码类型也必须是干净的。
+index.html[CG5T]: F:提供前端 HTML 挂载壳 | R:code:web-app/src/main.tsx | A:lang 为 zh-CN、favicon.svg、viewport、description、title、#root 与 module 脚本指向 /src/main.tsx | S:标题写死在这里，不会被 VITE_APP_TITLE 覆盖，改品牌名要同时改这一处。
+package-lock.json[CG5L]: F:锁定前端依赖版本树 | R:code:web-app/package.json | A:lockfileVersion 3、requires true、packages 下 669 条记录(含根包与嵌套 node_modules 条目) | S:由 npm install 生成，不要手改；package.json 与它必须同一次提交，否则 npm ci 会因版本不符失败。
+package.json[CG8T]: F:声明前端依赖与脚本 | R:code:web-app/package-lock.json,code:web-app/vite.config.ts,code:web-app/README.md | A:engines node >=22.22.0/scripts(dev、build 为 tsc -b 加 vite build、preview、typecheck、lint)/依赖(react 19、react-router 8、radix-ui、echarts 6、zod 4、shadcn)/devDependencies(typescript ~6.0.3、vite 8、tailwindcss 4、eslint 10) | S:vite 8 基于 rolldown，build 前先跑 tsc -b，类型错误会直接让构建失败；typescript 必须留在 ~6.0.3。
+tsconfig.app.json[CG7T]: F:配置应用侧 TS 编译 | R:code:web-app/tsconfig.json,code:web-app/package.json | A:target ES2022、moduleResolution bundler、jsx react-jsx、verbatimModuleSyntax、noEmit、strict 加 noUnusedLocals 与 noUnusedParameters、erasableSyntaxOnly、noUncheckedSideEffectImports、paths 的 @/*、include src | S:verbatimModuleSyntax 要求类型导入写 import type；erasableSyntaxOnly 禁用 enum，新增代码不能用这两种语法。
+tsconfig.json[CG7T]: F:汇总前端 TS 工程引用 | R:code:web-app/tsconfig.app.json,code:web-app/tsconfig.node.json | A:files 为空、references 指向 tsconfig.app.json 与 tsconfig.node.json、baseUrl 与 paths 的 @/* 别名 | S:根配置不包含任何源文件，tsc -b 实际编译的是两个被引用工程，改编译目标要进子配置。
+tsconfig.node.json[CG5T]: F:配置构建脚本 TS 编译 | R:code:web-app/vite.config.ts,code:web-app/tsconfig.json | A:target ES2023、types 只含 node、include 只有 vite.config.ts、与 app 侧同样开启 strict 与 verbatimModuleSyntax | S:只覆盖 vite.config.ts，往这里加业务源码会缺 DOM 类型。
+vite.config.ts[CG7T]: F:配置前端构建与代理 | R:code:web-app/package.json,code:web-app/src/index.css | A:plugins 为 react() 与 tailwindcss()、resolve.alias 的 @ 指向 src、server.port 5173 与 /api 代理到 localhost:8000、build.chunkSizeWarningLimit 700 与 rolldownOptions.output.codeSplitting.groups(echarts、react) | S:Vite 8 已废弃 rollupOptions，分包必须写在 rolldownOptions.output.codeSplitting.groups；开发代理只转 /api。
+
+===D:/Projects/Software/web-app/public/===
+favicon.svg[CG1T]: F:提供站点图标 | R:- | A:32x32 圆角矩形底色加折线描边的单文件 SVG | S:-
+
+===D:/Projects/Software/web-app/src/components/===
+AppLayout.tsx[CG8S]: F:提供登录后的整体框架 | R:code:web-app/src/contexts/chat-session-context.tsx,code:web-app/src/contexts/auth-context.tsx,code:web-app/src/routes.tsx | A:左侧 aside 的品牌行(HeartPulse 加 PHA 加 /dashboard 图标)、对话记录 ScrollArea(骨架屏、空态、列表项按钮)、底部昵称 DropdownMenu(退出登录)；main 内 Outlet 与免责声明 footer；goToChat() | S:侧边栏 ScrollArea 必须带 min-h-0，Radix 的 root 自身 overflow 仍是 visible，在 column flex 里会被内容高度撑破；列表项用 aria-current 标当前会话，不用 Link。
+EChart.tsx[CG5T]: F:承载 ECharts 实例生命周期 | R:code:web-app/src/lib/echarts.ts | A:EChartProps(option、className、notMerge 默认 true、ariaLabel)、挂载时 init 与 ResizeObserver resize、cleanup dispose、option 变更 setOption | S:容器必须由调用方给出高度类，否则 canvas 高度为 0；option 类型只能来自 lib/echarts 已注册的模块。
+GuestOnly.tsx[CG5T]: F:限制登录页只给未登录用户 | R:code:web-app/src/contexts/auth-context.tsx,code:web-app/src/routes.tsx | A:GuestOnly 组件：auth 非空时 Navigate 到 /chat，否则渲染 children | S:它只做前端跳转，真正的访问控制在后端 JWT；已登录用户改地址也进不了登录页。
+MarkdownMessage.tsx[CG8T]: F:渲染助手回复的 Markdown | R:code:web-app/src/pages/ChatPage.tsx | A:MarkdownMessage({content})、components 映射(p、strong、em、a、ul、ol、li、h1-h4、blockquote、hr、pre、code、table、th、td)、remarkPlugins=[remarkGfm] | S:刻意不开 rehype-raw，模型输出里的 HTML 一律按纯文本处理以防注入；react-markdown 10 起不再传 inline 标记，只能靠 className 的 language- 前缀区分围栏代码块。
+RequireAuth.tsx[CG7T]: F:拦截未登录访问 | R:code:web-app/src/contexts/auth-context.tsx,code:web-app/src/routes.tsx | A:RequireAuth({children})：auth 为 null 时 Navigate 到 /login 并 replace | S:不做回跳原页面，登录成功统一进对话页。
+ThinkingBlock.tsx[CG8T]: F:展示模型思考过程 | R:code:web-app/src/pages/ChatPage.tsx,code:web-app/src/index.css | A:ThinkingBlock({text、running、thinkingMs})、manualOpen 状态、bodyRef 自动滚到底、Brain 与 ChevronRight 图标、标签「深度思考中…」与「已深度思考 N 秒」 | S:思考分片每秒可达几十片，所以只做纯文本渲染，绝不走 MarkdownMessage；展开态由 manualOpen 与 running 推导而非用 effect 同步，用户手点过就一直尊重其选择。
+
+===D:/Projects/Software/web-app/src/components/ui/===
+alert.tsx[CG5T]: F:提供提示条组件 | R:code:web-app/src/pages/ChatPage.tsx,code:web-app/src/pages/LoginPage.tsx | A:alertVariants(default、destructive)、Alert(role 为 alert)、AlertTitle、AlertDescription、AlertAction | S:variant=destructive 只改文字与图标颜色，底色仍是 bg-card，不会自己变红底。
+avatar.tsx[CG5S]: F:提供头像组件 | R:code:web-app/src/components/AppLayout.tsx | A:Avatar(size default/sm/lg)、AvatarImage、AvatarFallback、AvatarBadge、AvatarGroup、AvatarGroupCount | S:尺寸全靠 data-size 与 group-data 选择器驱动，不要再传 size 工具类；无图时用 AvatarFallback 显示昵称首字。
+badge.tsx[CG5T]: F:提供标签组件 | R:code:web-app/src/pages/ChatPage.tsx | A:badgeVariants(default、secondary、destructive、outline、ghost、link)、Badge(asChild) | S:高度写死 h-5 且 overflow-hidden，放长文本会被裁掉，只适合「失败」「已终止」「来源」这类短标记。
+button.tsx[CG5T]: F:提供按钮组件 | R:code:web-app/src/pages/ChatPage.tsx,code:web-app/src/components/AppLayout.tsx,code:web-app/src/pages/LoginPage.tsx | A:buttonVariants 的 variant(default、outline、secondary、ghost、destructive、link) 与 size(default、xs、sm、lg、icon、icon-xs、icon-sm、icon-lg)、Button(asChild 走 Slot.Root、data-slot=button) | S:asChild 时不再渲染 button 标签，纯图标按钮要自己给 aria-label。
+card.tsx[CG5S]: F:提供卡片容器 | R:code:web-app/src/pages/DashboardPage.tsx,code:web-app/src/pages/LoginPage.tsx | A:Card(size default/sm)、CardHeader、CardTitle、CardDescription、CardAction、CardContent、CardFooter，间距由 --card-spacing 统一控制 | S:CardHeader 见到 card-action 会自动切成两列、有 CardFooter 时 Card 自动去掉底部内边距，再写自定义 padding 会打架。
+dropdown-menu.tsx[CG5M]: F:提供下拉菜单组件 | R:code:web-app/src/components/AppLayout.tsx | A:DropdownMenu、Trigger、Portal、Content(align、sideOffset)、Group、Label、Item(variant 默认与 destructive、inset)、CheckboxItem、RadioGroup、RadioItem、Separator、Shortcut、Sub、SubTrigger、SubContent 共 16 个导出 | S:Content 宽度跟随触发器（w-(--radix-dropdown-menu-trigger-width)），要更宽只能覆盖该类；文件由 shadcn 生成，改样式前先确认不是生成器默认值。
+field.tsx[CG5M]: F:提供表单字段布局 | R:code:web-app/src/pages/ChatPage.tsx,code:web-app/src/pages/LoginPage.tsx | A:FieldSet、FieldLegend、FieldGroup、Field(orientation vertical/horizontal/responsive)、FieldContent、FieldLabel、FieldTitle、FieldDescription、FieldSeparator、FieldError(errors 数组) | S:FieldError 无 children 时用 Map 按 message 去重，同文案错误只显示一条；data-invalid 只挂在 Field 上，input 必须自己传 aria-invalid。
+input.tsx[CG5T]: F:提供单行输入框 | R:code:web-app/src/pages/LoginPage.tsx | A:Input(透传 type、data-slot=input、focus-visible 焦点环、aria-invalid 红边) | S:高度 h-8 且文件选择与 disabled 样式都内置，覆盖样式要连 md:text-sm 一起考虑。
+label.tsx[CG5T]: F:提供表单标签 | R:code:web-app/src/components/ui/field.tsx | A:Label(基于 Radix LabelPrimitive.Root、data-slot=label、支持 peer-disabled 与 group-data-[disabled=true]) | S:必须由 Radix 的 Label 提供 htmlFor 关联，用原生 label 会丢掉点击聚焦行为。
+scroll-area.tsx[CG5T]: F:包装可滚动区域 | R:code:web-app/src/pages/ChatPage.tsx,code:web-app/src/components/AppLayout.tsx | A:ScrollArea(Root 只有 relative)、ScrollBar(orientation)、内部 Viewport 带 data-slot=scroll-area-viewport | S:Root 自身 overflow 仍是 visible，放进 column flex 必须给 min-h-0，否则被内容撑高；viewport 没有对外 ref，只能用 querySelector 找出来设 scrollTop。
+separator.tsx[CG5T]: F:提供分隔线 | R:code:web-app/src/components/AppLayout.tsx,code:web-app/src/components/ui/field.tsx | A:Separator(orientation、decorative 默认 true)，靠 data-horizontal 与 data-vertical 控制 h-px 或 w-px | S:decorative 为 true 时不带 role=separator，纯装饰用途不要滥用语义。
+skeleton.tsx[CG3T]: F:提供骨架屏占位 | R:code:web-app/src/pages/ChatPage.tsx,code:web-app/src/components/AppLayout.tsx | A:Skeleton(animate-pulse、rounded-md、bg-muted)，尺寸由调用方传 | S:底色是 bg-muted，放进同色气泡时要自己覆盖背景。
+tabs.tsx[CG5T]: F:提供页签组件 | R:code:web-app/src/pages/LoginPage.tsx | A:Tabs、TabsList(variant default 与 line)、TabsTrigger、TabsContent、tabsListVariants | S:选中态用 Radix 的 data-active 属性而不是 aria-selected，选择器写错会导致高亮失效。
+textarea.tsx[CG5T]: F:提供多行输入框 | R:code:web-app/src/pages/ChatPage.tsx | A:Textarea(field-sizing-content 自动增高、min-h-16、data-slot=textarea) | S:高度靠 field-sizing-content 自动撑开，自己写死高度会覆盖掉自动增高。
+
+===D:/Projects/Software/web-app/src/contexts/===
+auth-context.tsx[CG8T]: F:向组件树暴露登录态 | R:code:web-app/src/lib/auth.ts,code:web-app/src/lib/api.ts,code:web-app/src/components/RequireAuth.tsx | A:AuthProvider、useAuth() 返回 auth、signIn(result)、signOut()，用 useSyncExternalStore 订阅 lib/auth 的模块级 store | S:令牌校验只在启动时跑一次（依赖 token），网络异常不登出；未包 Provider 时抛「useAuth 必须在 <AuthProvider> 内部使用」。
+chat-session-context.tsx[CG8S]: F:共享当前会话与会话列表 | R:code:web-app/src/components/AppLayout.tsx,code:web-app/src/pages/ChatPage.tsx,code:web-app/src/lib/session.ts | A:ChatSessionProvider、useChatSession() 返回 sessionId、openSession、startNewChat、newChatToken、sessions、sessionsLoading、refreshSessions | S:sessions 为 null 表示还没拉到过，首屏骨架屏靠它判断，拉取失败按空列表处理；newChatToken 自增不可省：第一条消息之前 sessionId 本来就是 null，光看它无法发现又点了新对话。
+
+===D:/Projects/Software/web-app/src/data/===
+demo.ts[CG3T]: F:提供看板演示数据 | R:code:web-app/src/pages/DashboardPage.tsx | A:DailyMetric(7 天的 sleepHours、steps、restingHeartRate)、weeklyMetrics、HealthScore 与 healthScore(value 78、label 良好) | S:文件中已注明接入后端后由 services 的真实 API 调用替换。
+
+===D:/Projects/Software/web-app/src/===
+index.css[CG8S]: F:定义 Tailwind 与主题变量 | R:code:web-app/src/components/AppLayout.tsx,code:web-app/src/pages/ChatPage.tsx | A:四个 @import(tailwindcss、tw-animate-css、shadcn/tailwind.css、Geist 字体)、@custom-variant dark、@layer base 基础样式、@theme inline 语义色映射、:root 与 .dark 的 oklch 变量、@theme 内的 --animate-dot-wave | S:侧边栏已有 --sidebar 系列变量可直接使用；--animate-* 必须写在 @theme 里，Tailwind 才会在用到该工具类时把 @keyframes 一起打进产物。
+main.tsx[CG7T]: F:挂载 React 应用 | R:code:web-app/src/routes.tsx,code:web-app/src/contexts/auth-context.tsx | A:createRoot 挂到 #root、StrictMode 套 AuthProvider 再套 RouterProvider(createBrowserRouter(routes))、找不到 #root 时抛错 | S:StrictMode 会让 effect 在开发期跑两次，会话加载类 effect 必须自己处理双调用。
+routes.tsx[CG7T]: F:定义前端路由表 | R:code:web-app/src/components/AppLayout.tsx,code:web-app/src/components/RequireAuth.tsx,code:web-app/src/contexts/chat-session-context.tsx,code:web-app/src/pages/ChatPage.tsx | A:RouteObject 数组：/login 包 GuestOnly，/ 包 RequireAuth 与 ChatSessionProvider 再渲染 AppLayout，子路由 index 与 * 都 Navigate 到 /chat，另有 chat 与 dashboard | S:ChatSessionProvider 必须挂在 AppLayout 外层，侧边栏与会话页才算同一份状态；改路由时这层不能挪进 AppLayout。
+vite-env.d.ts[CG5T]: F:声明前端环境变量类型 | R:code:web-app/.env.example | A:ImportMetaEnv 的 VITE_API_BASE_URL 与 VITE_APP_TITLE(均可选)、ImportMeta.env | S:新增环境变量必须在这里补类型，否则 import.meta.env 取不到类型检查。
+
+===D:/Projects/Software/web-app/src/lib/===
+api.ts[CG9M]: F:封装后端接口与 SSE 解析 | R:code:web-app/src/lib/http.ts,code:web-app/src/lib/auth.ts,code:web-app/src/pages/ChatPage.tsx,code:web-app/src/contexts/chat-session-context.tsx | A:ChatStreamEvent 联合(11 种事件)、KNOWN_EVENT_TYPES、streamChat 异步生成器、login、register、fetchMe、logout、fetchSessionMessages、fetchSessions、fetchStreamState、fetchSessionSummary(临时)、ChatMessage 与 SessionMessages 等类型 | S:必须手写 fetch 加 ReadableStream：EventSource 只支持 GET 而这里是 POST，axios 也拿不到流式分块；未知事件类型只记 debug 日志后跳过，避免后端协议更新时打断整条流。
+auth.ts[CG8S]: F:管理本地登录态 | R:code:web-app/src/lib/http.ts,code:web-app/src/contexts/auth-context.tsx | A:AuthUser 与 AuthState、subscribeAuth、getAuthSnapshot、getToken、saveAuth、clearAuth，localStorage 键为 pha.auth | S:模块级 current 在 import 时就读取并做过期判断，坏内容直接删掉；getToken 每次调用都重新判过期，页面长开也能立刻登出。
+echarts.ts[CG5T]: F:按需注册 ECharts 模块 | R:code:web-app/src/components/EChart.tsx,code:web-app/src/pages/DashboardPage.tsx | A:echarts.use([LineChart、BarChart、GaugeChart、Grid、Tooltip、Legend、Title、CanvasRenderer])、由已注册模块推导的 ECOption、默认导出 echarts | S:新增图表类型必须同步改三处（import、use 数组、ECOption 联合），否则类型缺失或运行时组件不生效。
+http.ts[CG8S]: F:统一 axios 实例与错误 | R:code:web-app/src/lib/api.ts,code:web-app/src/lib/auth.ts | A:ApiError(status、code)、http(baseURL 为 /api/v1、15s 超时)、注入 Bearer 的请求拦截器、统一转 ApiError 的响应拦截器、toApiError、apiErrorFromResponse | S:401 在这里顺手 clearAuth，界面随之回登录页；网络层错误统一记为 0，FastAPI 的 detail 可能是字符串、数组或对象三种形态，都要能取到 message。
+session.ts[CG5T]: F:记忆最近一次会话 | R:code:web-app/src/contexts/chat-session-context.tsx | A:readLastSession、saveLastSession、clearLastSession，localStorage 键为 pha.last_session | S:localStorage 不可用或配额满时静默退化为不记忆；这里只存会话 ID，历史消息一律从后端账本拉。
+utils.ts[CG3T]: F:重导出 cn 工具函数 | R:- | A:export { cn } from "cn" | S:组件库统一从 cn 包引入，不是本地 clsx 封装。
+
+===D:/Projects/Software/web-app/src/pages/===
+ChatPage.tsx[CG9L]: F:实现对话主页面 | R:code:web-app/src/lib/api.ts,code:web-app/src/contexts/chat-session-context.tsx,code:web-app/src/components/ThinkingBlock.tsx,code:web-app/src/components/MarkdownMessage.tsx | A:Bubble 与 Block 状态模型、applyDeltas、BubbleRow、WaitingIndicator、CompactionDivider、toBubbles、withStreamState、send()、startBlock 与 stopBlock、retryTurn、refreshCompactionMarker、toggleSummary(临时) | S:分片必须按帧合并（思考可达每秒几十片）；加载历史的 effect 用 loadedSessionRef 记账并在未跑完时归还所有权，否则 StrictMode 双调用会把界面卡在骨架屏；ScrollArea 必须带 min-h-0，滚动跟随只能自己设 viewport 的 scrollTop。
+DashboardPage.tsx[CG7M]: F:实现健康看板页 | R:code:web-app/src/data/demo.ts,code:web-app/src/components/EChart.tsx | A:StatTile、ChartCard、summary 平均值、sleepAndActivityOption(双 y 轴折线加柱)、heartRateOption(固定 50-75)、healthScoreOption(gauge) | S:数据全部来自 data/demo.ts 的静态示例，尚未接后端；主内容区不再给内边距，本页自带 padding。
+LoginPage.tsx[CG8M]: F:实现登录与注册页 | R:code:web-app/src/lib/api.ts,code:web-app/src/contexts/auth-context.tsx,code:web-app/src/components/ui/tabs.tsx | A:loginSchema 与 registerSchema(zod)、useForm 与 zodResolver、switchMode、submit 调 login 或 register 后 signIn、appTitle、PHONE_PATTERN | S:登录只校验密码非空，长度规则留给注册与后端；PHONE_PATTERN 必须与后端 schemas/auth.py 保持一致，注册成功即已登录并直接 signIn。

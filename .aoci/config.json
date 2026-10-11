@@ -32,7 +32,9 @@
     ".coverage"
   ],
   "exclude_exts": [],
-  "curation_exclude": [],
+  "curation_exclude": [
+    "agent-app/README.md"
+  ],
   "hook_strict": false,
   "ledger_enabled": true,
   "line_ending_tolerance": true,
