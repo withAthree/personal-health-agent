@@ -36,19 +36,23 @@ class Settings(BaseSettings):
     #: 要改 .env 并重启后端容器，光改这里不生效。
     llm_model: str = "deepseek-ai/DeepSeek-V3.2"
 
-    #: 旁路任务（上下文摘要、长期记忆抽取）用的模型。
-    #: 这两类任务与对话的性质完全不同——非流式、要一次性拿到完整结果、要便宜快，
-    #: 记忆抽取还要模型可靠地吐出结构化输出——所以它们能独立选型，换掉时不影响
-    #: 对话质量。**留空表示回落到 ``llm_model``**。
+    #: 上下文摘要（压缩）用的模型。摘要是纯改写任务，输入长、输出短，且**在用户
+    #: 等待路径上**，所以要便宜且够快。**留空表示回落到 ``llm_model``**。
     #: 各调用点的要求与验收标准见 ``document/模型使用清单.md``。
-    llm_utility_model: str = ""
+    llm_summary_model: str = ""
+
+    #: 长期记忆抽取用的模型。它必须在后台可靠地吐出符合 schema 的结构化输出
+    #: （``memory/extract.py`` 的 ``MemoryOps``），判错会污染之后每一轮对话，
+    #: 所以选型标准与摘要不同，两者分开配置。**留空表示回落到 ``llm_model``**。
+    llm_memory_model: str = ""
 
     #: 是否让对话模型输出思考过程（reasoning）。
     #: **默认关闭**：实测 ``deepseek-ai/DeepSeek-V3.2`` 开启后输出 token 约为关闭时的
     #: 30 倍，首个正文分片从约 3 秒推迟到约 14 秒（见
     #: ``document/中间过程可见-设计方案.md``）。
     #: 通过 ``extra_body`` 透传给 provider：硅基流动的参数名是 ``enable_thinking``。
-    #: 旁路任务客户端（``llm/client.py`` 的 ``get_utility_llm``）永远不开启。
+    #: 旁路任务客户端（``llm/client.py`` 的 ``get_summary_llm`` 与 ``get_memory_llm``）
+    #: 永远不开启。
     llm_enable_thinking: bool = False
 
     #: 模型的输入窗口（token）。框架的百分比口径（``("fraction", x)``）必须能从

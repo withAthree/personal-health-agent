@@ -119,16 +119,30 @@ def get_llm() -> ChatOpenAI:
 
 
 @lru_cache(maxsize=1)
-def get_utility_llm() -> ChatOpenAI:
-    """返回**旁路任务**专用的 LLM 客户端单例。
+def get_summary_llm() -> ChatOpenAI:
+    """返回**上下文摘要**专用的 LLM 客户端单例。
+
+    摘要是这个项目里唯一在用户等待路径上的旁路调用（``_stream_chat`` 要在
+    回复后触发压缩），所以它单独一个配置项 ``settings.llm_summary_model``。
+    """
+    return _build_utility_llm(settings.llm_summary_model or settings.llm_model)
+
+
+@lru_cache(maxsize=1)
+def get_memory_llm() -> ChatOpenAI:
+    """返回**长期记忆抽取**专用的 LLM 客户端单例。
+
+    抽取在后台任务里跑（``memory/extract.py``），对延迟不敏感，但对结构化输出
+    的可靠性敏感，因此与摘要分开选型：``settings.llm_memory_model``。
+    """
+    return _build_utility_llm(settings.llm_memory_model or settings.llm_model)
+
+
+def _build_utility_llm(model: str) -> ChatOpenAI:
+    """旁路任务客户端的共同构造。
 
     旁路任务 = 上下文摘要 + 长期记忆抽取：都不与用户直接对话，都需要一次性
-    拿到完整结果（非流式），都不希望内容被重新演绎（低温），都可以用比对话
-    更便宜的模型。与对话客户端分开的另一个理由是**调用形态**：这两个任务都在
-    用户等待路径上或紧邻它，换成一个慢模型会直接表现为卡顿。
-
-    模型名取 ``settings.llm_utility_model``，为空时回落到 ``settings.llm_model``
-    ——所以旧配置不用动就能跑，但这两类任务可以独立换模型。
+    拿到完整结果（非流式），都不希望内容被重新演绎（低温）。
 
     ``profile`` 不能省：压缩阈值用的是百分比口径（``llm/context.py`` 的
     ``SUMMARY_TRIGGER_FRACTION`` / ``SUMMARY_KEEP_FRACTION``），而
@@ -136,7 +150,7 @@ def get_utility_llm() -> ChatOpenAI:
     窗口大小，取不到就在**构造期**直接抛 ``ValueError``。
     """
     return ChatOpenAI(
-        model=settings.llm_utility_model or settings.llm_model,
+        model=model,
         api_key=SecretStr(settings.llm_api_key) if settings.llm_api_key else None,
         base_url=settings.llm_base_url,
         temperature=0.2,

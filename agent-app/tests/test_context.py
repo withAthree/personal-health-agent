@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from agent_app.config import settings
-from agent_app.llm.client import get_utility_llm
+from agent_app.llm.client import get_memory_llm, get_summary_llm
 from agent_app.llm.context import (
     SUMMARY_KEEP_FRACTION,
     SUMMARY_KEEP_TOKENS,
@@ -104,13 +104,36 @@ def test_summary_client_carries_model_profile(monkeypatch: pytest.MonkeyPatch) -
     清掉 ``lru_cache``，避免占位密钥的客户端泄给其他用例。
     """
     monkeypatch.setattr(settings, "llm_api_key", "test-key")
-    get_utility_llm.cache_clear()
+    get_summary_llm.cache_clear()
     try:
-        client = get_utility_llm()
+        client = get_summary_llm()
 
         assert client.profile == {"max_input_tokens": settings.llm_max_input_tokens}
     finally:
-        get_utility_llm.cache_clear()
+        get_summary_llm.cache_clear()
+
+
+def test_utility_clients_take_their_own_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """摘要与记忆抽取各自独立选型，留空时都回落 ``llm_model``。"""
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(settings, "llm_model", "base-model")
+    monkeypatch.setattr(settings, "llm_summary_model", "summary-model")
+    monkeypatch.setattr(settings, "llm_memory_model", "memory-model")
+    get_summary_llm.cache_clear()
+    get_memory_llm.cache_clear()
+    try:
+        assert get_summary_llm().model_name == "summary-model"
+        assert get_memory_llm().model_name == "memory-model"
+
+        monkeypatch.setattr(settings, "llm_summary_model", "")
+        monkeypatch.setattr(settings, "llm_memory_model", "")
+        get_summary_llm.cache_clear()
+        get_memory_llm.cache_clear()
+        assert get_summary_llm().model_name == "base-model"
+        assert get_memory_llm().model_name == "base-model"
+    finally:
+        get_summary_llm.cache_clear()
+        get_memory_llm.cache_clear()
 
 
 def test_compaction_keeps_turn_alignment() -> None:

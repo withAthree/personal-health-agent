@@ -14,14 +14,14 @@ from langchain_core.messages import MessageLikeRepresentation
 from langchain_core.messages.utils import count_tokens_approximately
 
 from agent_app.config import settings
-from agent_app.llm.client import get_utility_llm
+from agent_app.llm.client import get_summary_llm
 
 #: 触发摘要的阈值。**当前生效的是百分比口径**（``build_summarization_middleware``
 #: 的默认参数），按模型窗口的 ``settings.summary_trigger_fraction`` 触发。
 #: 不用消息条数是因为单条消息长度差很多。
 #: 走百分比要求模型带 ``profile``（框架从 ``model.profile["max_input_tokens"]``
 #: 取窗口），取不到会在构造期抛 ``ValueError``、让每次对话都失败；摘要客户端的
-#: ``profile`` 由 ``llm/client.py`` 的 ``get_utility_llm`` 提供。
+#: ``profile`` 由 ``llm/client.py`` 的 ``get_summary_llm`` 提供。
 #: 数值直接决定「摘要那次非流式调用」多久出现一次，而这个调用会整个挡在用户的
 #: 首字等待里。``SUMMARY_TRIGGER_TOKENS`` 是等价的绝对口径，当前未被使用。
 SUMMARY_TRIGGER_TOKENS: ContextSize = ("tokens", settings.summary_trigger_tokens)
@@ -123,13 +123,13 @@ def build_summarization_middleware(
 ) -> SummarizationMiddleware:
     """构造摘要中间件。
 
-    ``model`` 为空时使用旁路任务客户端；测试可注入假模型，避免真实调用。
+    ``model`` 为空时用摘要客户端 ``get_summary_llm()``；测试可注入假模型，避免真实调用。
     ``trigger`` / ``keep`` 默认是百分比口径，要求该模型带 ``profile``
-    （旁路客户端已带；注入假模型时要自己补，否则这里就抛 ``ValueError``）。
+    （摘要客户端已带；注入假模型时要自己补，否则这里就抛 ``ValueError``）。
     摘要提示词是框架内置 ``DEFAULT_SUMMARY_PROMPT`` 的中文译文（``SUMMARY_PROMPT``）。
     """
     return SummarizationMiddleware(
-        model=model if model is not None else get_utility_llm(),
+        model=model if model is not None else get_summary_llm(),
         trigger=trigger,
         keep=keep,
         token_counter=chinese_token_counter,

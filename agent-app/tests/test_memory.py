@@ -363,7 +363,7 @@ async def test_extract_turn_memories_writes_model_output(
             ]
         )
     )
-    monkeypatch.setattr(extract_module, "get_utility_llm", lambda: stub)
+    monkeypatch.setattr(extract_module, "get_memory_llm", lambda: stub)
 
     applied = await extract_turn_memories(
         user_id=user_id,
@@ -386,7 +386,7 @@ async def test_extract_turn_memories_swallows_model_failure(
 ) -> None:
     user_id, _ = two_users
     monkeypatch.setattr(
-        extract_module, "get_utility_llm", lambda: _StubLLM(RuntimeError("上游 500"))
+        extract_module, "get_memory_llm", lambda: _StubLLM(RuntimeError("上游 500"))
     )
 
     applied = await extract_turn_memories(
@@ -406,7 +406,7 @@ async def test_extract_turn_memories_ignores_empty_turn(
 ) -> None:
     user_id, _ = two_users
     stub = _StubLLM(MemoryOps(ops=[]))
-    monkeypatch.setattr(extract_module, "get_utility_llm", lambda: stub)
+    monkeypatch.setattr(extract_module, "get_memory_llm", lambda: stub)
 
     applied = await extract_turn_memories(
         user_id=user_id,
