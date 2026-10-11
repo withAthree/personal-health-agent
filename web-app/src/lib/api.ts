@@ -2,15 +2,68 @@ import { clearAuth, getToken, type AuthUser } from '@/lib/auth'
 import { apiErrorFromResponse, http } from '@/lib/http'
 
 /**
+ * 过程块的类型。
+ *
+ * v1 后端只会发 `thinking` 与 `text`，其余是协议预留：多 Agent 上线后由同一套
+ * 事件承载工具调用、结果、分析计划等。前端应当把未知 kind 也当普通文本渲染，
+ * 而不是丢弃整条事件。
+ */
+export type StreamBlockKind =
+  | 'thinking'
+  | 'text'
+  | 'tool_call'
+  | 'tool_result'
+  | 'plan'
+  | 'image'
+  | 'error'
+
+/** 块的终态；`running` 表示还在追加内容。 */
+export type StreamBlockStatus = 'running' | 'complete' | 'interrupted' | 'error'
+
+/** 一轮（run）的整体状态。 */
+export type StreamStatus = 'running' | 'done' | 'error' | 'interrupted'
+
+/**
  * 后端聊天接口的 SSE 事件负载。
  *
  * 字段与 `POST /api/v1/chat` 保持一致，见 agent-app/src/agent_app/api/v1/chat.py。
+ * 分片引用 `block_id` 而不是 `index`：重新生成（`reset`）会让 index 从头复用。
  */
 export type ChatStreamEvent =
   | { type: 'session'; session_id: string }
+  | { type: 'run-start'; run_id: string; agent_source: string }
+  | {
+      type: 'block-start'
+      block_id: string
+      index: number
+      step: number
+      kind: StreamBlockKind
+      meta: Record<string, unknown> | null
+    }
+  | { type: 'block-delta'; block_id: string; delta: string }
+  | { type: 'block-stop'; block_id: string; status: StreamBlockStatus }
+  | { type: 'reset'; from_index: number }
+  | { type: 'compaction'; covered: number }
+  | { type: 'usage'; input_tokens: number; output_tokens: number }
+  /** 旧协议的正文分片；后端已不再发送，保留解析分支以便回滚。 */
   | { type: 'chunk'; content: string; agent_source: string }
   | { type: 'error'; content: string }
   | { type: 'done'; session_id: string }
+
+/** 已知事件类型；未知类型只记日志，不影响这一轮其余事件。 */
+const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'session',
+  'run-start',
+  'block-start',
+  'block-delta',
+  'block-stop',
+  'reset',
+  'compaction',
+  'usage',
+  'chunk',
+  'error',
+  'done',
+])
 
 export interface ChatRequestBody {
   message: string
@@ -43,7 +96,9 @@ function parseDataLine(line: string): ChatStreamEvent | null {
   }
 
   const { type } = parsed as { type?: unknown }
-  if (type !== 'session' && type !== 'chunk' && type !== 'error' && type !== 'done') {
+  if (typeof type !== 'string' || !KNOWN_EVENT_TYPES.has(type)) {
+    // 后端协议比前端新时不要把整条流打断：记一条调试日志然后跳过这条事件
+    console.debug('[chat-stream] 忽略未知事件', type, parsed)
     return null
   }
 
@@ -184,6 +239,40 @@ export interface SessionMessages {
  */
 export async function fetchSessionMessages(sessionId: string): Promise<SessionMessages> {
   const response = await http.get<SessionMessages>(`/chat/${sessionId}/messages`)
+  return response.data
+}
+
+/** 服务端聚合态里的一个过程块，对应后端 `StreamBlockOut`。 */
+export interface StreamStateBlock {
+  block_id: string
+  index: number
+  step: number
+  kind: StreamBlockKind
+  text: string
+  status: StreamBlockStatus
+  meta: Record<string, unknown> | null
+}
+
+/** 服务端保留的本轮聚合态，对应后端 `StreamStateOut`。 */
+export interface StreamState {
+  session_id: string
+  run_id: string
+  status: StreamStatus
+  started_at: number
+  finished_at: number | null
+  blocks: StreamStateBlock[]
+  compaction: { covered: number } | null
+  usage: Record<string, unknown> | null
+}
+
+/**
+ * 读取服务端保留的本轮聚合态。
+ *
+ * 它只活在 Redis 里（TTL 30 分钟），从来不是历史来源：正文一律以账本为准，
+ * 这里拿到的过程块只用来还原「刚才那一轮模型想了什么」。没有记录时返回 null。
+ */
+export async function fetchStreamState(sessionId: string): Promise<StreamState | null> {
+  const response = await http.get<StreamState | null>(`/chat/${sessionId}/stream-state`)
   return response.data
 }
 

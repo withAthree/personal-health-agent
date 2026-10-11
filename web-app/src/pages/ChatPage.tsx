@@ -21,14 +21,28 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { MarkdownMessage } from '@/components/MarkdownMessage'
+import { ThinkingBlock } from '@/components/ThinkingBlock'
 import {
   fetchSessionMessages,
   fetchSessionSummary,
+  fetchStreamState,
   streamChat,
   type ChatMessage,
+  type StreamBlockKind,
+  type StreamBlockStatus,
+  type StreamState,
+  type StreamStatus,
 } from '@/lib/api'
 import { clearLastSession, readLastSession, saveLastSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
+
+interface Block {
+  /** 后端的 `block_id`；流式分片按它归位（`index` 在重试后会从头复用）。 */
+  id: string
+  kind: StreamBlockKind
+  text: string
+  status: StreamBlockStatus
+}
 
 interface Bubble {
   id: number
@@ -40,6 +54,68 @@ interface Bubble {
   interrupted: boolean
   /** 回复失败（模型报错、网络中断）：气泡里就是错误文案，并给重试入口。 */
   failed: boolean
+  /**
+   * 本轮的过程块（含正文块）。
+   *
+   * 旧消息只有 `content` 字符串，这里为空数组；`content` 始终是「这一轮的答案
+   * 文本」，过程块只负责展示，重试与空回复清理都只看 `content`。
+   */
+  blocks: Block[]
+  /** 本轮标识，来自 `run-start`；历史消息为 null。 */
+  runId: string | null
+  /** 本轮开始的本地时刻，用来算「已深度思考 N 秒」。 */
+  runStartedAt: number | null
+  /** 思考阶段耗时（毫秒）；还没进入正文时为 null。 */
+  thinkingMs: number | null
+  /** 回放时服务端记下的本轮状态。 */
+  runStatus: StreamStatus | null
+}
+
+interface DeltaItem {
+  /** 目标气泡 id。 */
+  id: number
+  /** 目标过程块的 `block_id`。 */
+  blockId: string
+  delta: string
+}
+
+/**
+ * 把攒下的分片一次性合并进对应气泡。
+ *
+ * 思考分片实测能到每秒几十片（1015 片 / 1510 字），逐片 `setState` 会把主线程吃满，
+ * 所以分片先进 ref 缓冲，由 `requestAnimationFrame` 每帧合并一次。
+ */
+function applyDeltas(bubbles: Bubble[], items: DeltaItem[]): Bubble[] {
+  return bubbles.map((bubble) => {
+    const mine = items.filter((item) => item.id === bubble.id)
+    if (mine.length === 0) {
+      return bubble
+    }
+
+    const byBlock = new Map<string, string>()
+    for (const item of mine) {
+      byBlock.set(item.blockId, (byBlock.get(item.blockId) ?? '') + item.delta)
+    }
+
+    let appended = ''
+    const blocks = bubble.blocks.map((block) => {
+      const delta = byBlock.get(block.id)
+      if (delta === undefined) {
+        return block
+      }
+      if (block.kind === 'text') {
+        appended += delta
+      }
+      return { ...block, text: block.text + delta }
+    })
+
+    return { ...bubble, blocks, content: bubble.content + appended }
+  })
+}
+
+/** 本轮开始至今的毫秒数；拿不到起点时返回 null。 */
+function elapsedSince(startedAt: number | null): number | null {
+  return startedAt === null ? null : Date.now() - startedAt
 }
 
 const isAbortError = (error: unknown): boolean =>
@@ -76,6 +152,16 @@ function BubbleRow({
   onRetry: (() => void) | null
 }) {
   const isUser = bubble.role === 'user'
+  const thinkingBlocks = bubble.blocks.filter((block) => block.kind === 'thinking')
+  const thinkingText = thinkingBlocks.map((block) => block.text).join('')
+  const thinkingRunning = thinkingBlocks.some((block) => block.status === 'running')
+  // 还在思考、正文一个字都还没来时，不显示空气泡：思考面板本身就是「正在处理」
+  // 的反馈，也就不再需要原来的骨架屏
+  const showAnswer =
+    isUser ||
+    bubble.pending === false ||
+    bubble.content !== '' ||
+    bubble.blocks.some((block) => block.kind === 'text')
 
   return (
     <div className={cn('flex gap-2.5', isUser ? 'justify-end' : 'justify-start')}>
@@ -85,28 +171,38 @@ function BubbleRow({
         </span>
       )}
       <div className="max-w-[85%] space-y-1">
-        <div
-          className={cn(
-            'rounded-2xl px-4 py-2.5 text-sm',
-            isUser
-              ? 'rounded-br-sm bg-primary whitespace-pre-wrap text-primary-foreground'
-              : 'rounded-bl-sm bg-muted text-foreground',
-            // 失败回复：把错误文案当作一条回复显示在对话里，而不是另弹一条提示
-            bubble.failed && 'bg-destructive/10 text-destructive',
-          )}
-        >
-          {bubble.pending && bubble.content === '' ? (
-            <>
-              {/* 气泡底色是 bg-muted，Skeleton 默认的 bg-accent 在同色系上看不出来 */}
-              <Skeleton className="h-4 w-24 bg-foreground/15" />
-              <span className="sr-only">正在思考…</span>
-            </>
-          ) : isUser || bubble.failed ? (
-            <span className="whitespace-pre-wrap">{bubble.content}</span>
-          ) : (
-            <MarkdownMessage content={bubble.content} />
-          )}
-        </div>
+        {isUser ? null : (
+          <ThinkingBlock
+            key={bubble.runId ?? 'history'}
+            text={thinkingText}
+            running={thinkingRunning}
+            thinkingMs={bubble.thinkingMs}
+          />
+        )}
+        {showAnswer ? (
+          <div
+            className={cn(
+              'w-fit rounded-2xl px-4 py-2.5 text-sm',
+              isUser
+                ? 'rounded-br-sm bg-primary whitespace-pre-wrap text-primary-foreground'
+                : 'rounded-bl-sm bg-muted text-foreground',
+              // 失败回复：把错误文案当作一条回复显示在对话里，而不是另弹一条提示
+              bubble.failed && 'bg-destructive/10 text-destructive',
+            )}
+          >
+            {bubble.pending && bubble.content === '' ? (
+              <>
+                {/* 气泡底色是 bg-muted，Skeleton 默认的 bg-accent 在同色系上看不出来 */}
+                <Skeleton className="h-4 w-24 bg-foreground/15" />
+                <span className="sr-only">正在思考…</span>
+              </>
+            ) : isUser || bubble.failed ? (
+              <span className="whitespace-pre-wrap">{bubble.content}</span>
+            ) : (
+              <MarkdownMessage content={bubble.content} />
+            )}
+          </div>
+        ) : null}
         {isUser ? (
           onRetry === null ? null : (
             <div className="flex justify-end">
@@ -183,7 +279,68 @@ function toBubbles(messages: ChatMessage[]): Bubble[] {
     pending: false,
     interrupted: message.interrupted,
     failed: false,
+    // 历史只有最终正文，没有过程块：这里不造假的正文块，只留空数组
+    blocks: [],
+    runId: null,
+    runStartedAt: null,
+    thinkingMs: null,
+    runStatus: null,
   }))
+}
+
+/**
+ * 把服务端保留的这轮过程块贴回会话末尾。
+ *
+ * 正文始终以账本为准，这里只补「模型当时的思考」。思考到一半就断了时账本里没有
+ * 回复行，那就单独接一个气泡，让它还能挂上「已终止」和重试入口。
+ */
+function withStreamState(
+  bubbles: Bubble[],
+  state: StreamState,
+  nextId: number,
+): { bubbles: Bubble[]; nextId: number } {
+  if (state.blocks.length === 0) {
+    return { bubbles, nextId }
+  }
+
+  const blocks: Block[] = state.blocks.map((block) => ({
+    id: block.block_id,
+    kind: block.kind,
+    text: block.text,
+    status: block.status,
+  }))
+  const last = bubbles[bubbles.length - 1]
+  if (last !== undefined && last.role === 'assistant') {
+    return {
+      bubbles: bubbles.map((bubble) =>
+        bubble.id === last.id
+          ? { ...bubble, blocks, runId: state.run_id, runStatus: state.status }
+          : bubble,
+      ),
+      nextId,
+    }
+  }
+
+  return {
+    bubbles: [
+      ...bubbles,
+      {
+        id: nextId,
+        role: 'assistant',
+        content: '',
+        agentSource: null,
+        pending: false,
+        interrupted: true,
+        failed: false,
+        blocks,
+        runId: state.run_id,
+        runStartedAt: null,
+        thinkingMs: null,
+        runStatus: state.status,
+      },
+    ],
+    nextId: nextId + 1,
+  }
 }
 
 export function ChatPage() {
@@ -204,6 +361,9 @@ export function ChatPage() {
   const listRef = useRef<HTMLDivElement>(null)
   // 是否停在底部：停在底部才跟随新内容，用户自己往上翻时不再把他拽回来
   const stickRef = useRef(true)
+  // 流式分片先攒在这里，每帧只 setState 一次（思考分片实测能到每秒几十片）
+  const deltaBufferRef = useRef<DeltaItem[]>([])
+  const frameRef = useRef<number | null>(null)
 
   const composer = useForm<ComposerValues>({
     resolver: zodResolver(composerSchema),
@@ -228,11 +388,28 @@ export function ChatPage() {
         if (cancelled) {
           return
         }
-        const restored = toBubbles(ledger.messages)
-        setBubbles(restored)
-        nextIdRef.current = restored.length + 1
-        setCompactedCount(ledger.compacted_message_count)
-        setSessionId(stored)
+          const restored = toBubbles(ledger.messages)
+          let nextId = restored.length + 1
+          // 过程块只是增强信息：拿不到（没记录 / Redis 不可用）就只看账本正文
+          let state: StreamState | null = null
+          try {
+            state = await fetchStreamState(stored)
+          } catch {
+            state = null
+          }
+          if (cancelled) {
+            return
+          }
+          let restoredBubbles = restored
+          if (state !== null) {
+            const merged = withStreamState(restored, state, nextId)
+            restoredBubbles = merged.bubbles
+            nextId = merged.nextId
+          }
+          setBubbles(restoredBubbles)
+          nextIdRef.current = nextId
+          setCompactedCount(ledger.compacted_message_count)
+          setSessionId(stored)
       } catch (err) {
         if (cancelled) {
           return
@@ -282,6 +459,78 @@ export function ChatPage() {
 
   function patchBubble(id: number, patch: Partial<Bubble>): void {
     setBubbles((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+  }
+
+  /** 把缓冲里的分片立刻合并进气泡（块边界与结束时用，避免丢掉最后一帧）。 */
+  function flushDeltas(): void {
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
+    const buffered = deltaBufferRef.current
+    if (buffered.length === 0) {
+      return
+    }
+    deltaBufferRef.current = []
+    setBubbles((prev) => applyDeltas(prev, buffered))
+  }
+
+  /** 攒到下一帧再合并，避免每个分片触发一次渲染。 */
+  function scheduleFlush(): void {
+    if (frameRef.current !== null) {
+      return
+    }
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null
+      const buffered = deltaBufferRef.current
+      if (buffered.length === 0) {
+        return
+      }
+      deltaBufferRef.current = []
+      setBubbles((prev) => applyDeltas(prev, buffered))
+    })
+  }
+
+  /** 新过程块开始：思考与正文的切换就发生在这里。 */
+  function startBlock(id: number, blockId: string, kind: StreamBlockKind): void {
+    setBubbles((prev) =>
+      prev.map((item) => {
+        if (item.id !== id) {
+          return item
+        }
+        const blocks: Block[] = [
+          ...item.blocks,
+          { id: blockId, kind, text: '', status: 'running' },
+        ]
+        // 正文块一出现就说明思考结束：记下想了多久，收起后还能显示
+        const thought = item.blocks.some((block) => block.kind === 'thinking')
+        const thinkingMs =
+          kind === 'text' && thought && item.thinkingMs === null
+            ? elapsedSince(item.runStartedAt)
+            : item.thinkingMs
+        return { ...item, blocks, thinkingMs }
+      }),
+    )
+  }
+
+  /** 块收尾：写回终态；思考块顺便补上耗时（思考到一半就断了也能显示）。 */
+  function stopBlock(id: number, blockId: string, status: StreamBlockStatus): void {
+    setBubbles((prev) =>
+      prev.map((item) => {
+        if (item.id !== id) {
+          return item
+        }
+        const stopped = item.blocks.find((block) => block.id === blockId)
+        const blocks = item.blocks.map((block) =>
+          block.id === blockId ? { ...block, status } : block,
+        )
+        const thinkingMs =
+          item.thinkingMs === null && stopped?.kind === 'thinking'
+            ? elapsedSince(item.runStartedAt)
+            : item.thinkingMs
+        return { ...item, blocks, thinkingMs }
+      }),
+    )
   }
 
   /**
@@ -388,6 +637,11 @@ export function ChatPage() {
       pending: false,
       interrupted: false,
       failed: false,
+      blocks: [],
+      runId: null,
+      runStartedAt: null,
+      thinkingMs: null,
+      runStatus: null,
     }
     const replyBubble: Bubble = {
       id: replyId,
@@ -397,6 +651,11 @@ export function ChatPage() {
       pending: true,
       interrupted: false,
       failed: false,
+      blocks: [],
+      runId: null,
+      runStartedAt: null,
+      thinkingMs: null,
+      runStatus: null,
     }
     // 重试沿用账本里那条提问，不再新增一条用户消息
     setBubbles((prev) => (isRetry ? [...prev, replyBubble] : [...prev, userBubble, replyBubble]))
@@ -413,7 +672,34 @@ export function ChatPage() {
         if (event.type === 'session') {
           setSessionId(event.session_id)
           saveLastSession(event.session_id)
+        } else if (event.type === 'run-start') {
+          patchBubble(replyId, {
+            runId: event.run_id,
+            agentSource: event.agent_source,
+            runStartedAt: Date.now(),
+          })
+        } else if (event.type === 'reset') {
+          // 重新生成：丢掉本轮的块，气泡本身留着
+          flushDeltas()
+          patchBubble(replyId, { blocks: [] })
+        } else if (event.type === 'block-start') {
+          flushDeltas()
+          startBlock(replyId, event.block_id, event.kind)
+        } else if (event.type === 'block-delta') {
+          deltaBufferRef.current.push({
+            id: replyId,
+            blockId: event.block_id,
+            delta: event.delta,
+          })
+          scheduleFlush()
+        } else if (event.type === 'block-stop') {
+          flushDeltas()
+          stopBlock(replyId, event.block_id, event.status)
+        } else if (event.type === 'compaction') {
+          // 后端直接给了分隔线位置，不必再多拉一次账本
+          setCompactedCount(event.covered)
         } else if (event.type === 'chunk') {
+          // 旧协议的正文分片：后端已不再发，保留这段是为了回滚协议时前端不用改
           setBubbles((prev) =>
             prev.map((item) =>
               item.id === replyId
@@ -425,6 +711,7 @@ export function ChatPage() {
           void refreshCompactionMarker(event.session_id)
         } else if (event.type === 'error') {
           // 失败当一条回复显示：气泡里就是错误文案，重试入口在这条回复上
+          flushDeltas()
           patchBubble(replyId, { content: event.content, failed: true })
         }
       }
@@ -440,6 +727,8 @@ export function ChatPage() {
         })
       }
     } finally {
+      // 收尾前先把缓冲里的分片并进去，否则最后不足一帧的内容会被丢掉
+      flushDeltas()
       abortRef.current = null
       setSending(false)
       // 没收到任何内容时不留空气泡
@@ -465,6 +754,11 @@ export function ChatPage() {
   function startNewChat(): void {
     abortRef.current?.abort()
     abortRef.current = null
+    deltaBufferRef.current = []
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
     stickRef.current = true
     setBubbles([])
     setSessionId(null)

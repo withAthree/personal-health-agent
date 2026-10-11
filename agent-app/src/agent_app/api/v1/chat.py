@@ -6,6 +6,10 @@
 * **模型记忆**：LangGraph checkpoint，超阈值时被摘要压缩，只影响发给模型的内容。
 
 因此前端拿到的永远是最新全量对话，而模型看到的是「摘要 + 最近若干条」。
+
+流上还会走一路**过程块**（思维链，将来的工具调用）：它只服务展示，不进账本，
+本轮期间以聚合态留在 Redis（``core/stream_state.py``），刷新页面可以回放。
+事件与 ``kind`` 枚举见 ``document/中间过程可见-设计方案.md``。
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
@@ -34,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from agent_app.api.deps import AuthContext, get_auth_context
+from agent_app.core import stream_state
 from agent_app.core.database import async_session_maker
 from agent_app.llm.agent import get_agent
 from agent_app.llm.call_log import ModelCallLogger
@@ -44,6 +50,7 @@ from agent_app.schemas.chat import (
     MessageOut,
     SessionMessagesOut,
     SessionSummaryOut,
+    StreamStateOut,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["chat"])
@@ -62,6 +69,25 @@ _MODEL_NODE = "model"
 #: 摘要中间件写回的消息带的标记（见 LangChain ``summarization.py``）。
 _SUMMARY_SOURCE = "summarization"
 
+#: 过程块类型，见 ``document/中间过程可见-设计方案.md`` §5.4。
+_BLOCK_THINKING = "thinking"
+_BLOCK_TEXT = "text"
+
+#: 过程块状态。
+_BLOCK_RUNNING = "running"
+_BLOCK_COMPLETE = "complete"
+_BLOCK_INTERRUPTED = "interrupted"
+_BLOCK_ERROR = "error"
+
+#: 整轮生成状态。
+_STATUS_RUNNING = "running"
+_STATUS_DONE = "done"
+_STATUS_ERROR = "error"
+_STATUS_INTERRUPTED = "interrupted"
+
+#: provider 用这个非标准字段承载思考过程（见 ``llm/client.py``）。
+_REASONING_FIELD = "reasoning_content"
+
 
 def _sse(payload: dict[str, Any]) -> dict[str, str]:
     """把事件负载编码为 sse-starlette 可消费的 chunk。"""
@@ -77,7 +103,7 @@ def _short_error(exc: BaseException) -> str:
 
 
 def _chunk_text(chunk: BaseMessageChunk) -> str:
-    """从流式分片中提取纯文本内容（忽略 reasoning 等非正文分片）。"""
+    """从流式分片中提取正文文本（思考另由 ``_chunk_reasoning`` 取）。"""
     content = chunk.content
     if isinstance(content, str):
         return content
@@ -88,6 +114,73 @@ def _chunk_text(chunk: BaseMessageChunk) -> str:
         elif isinstance(item, dict) and isinstance(item.get("text"), str):
             parts.append(item["text"])
     return "".join(parts)
+
+
+def _chunk_reasoning(chunk: BaseMessageChunk) -> str:
+    """从流式分片中提取思考内容。
+
+    ``ChatOpenAI`` 默认把 provider 的 ``reasoning_content`` 丢掉；
+    ``llm/client.py`` 的 ``ChatOpenAIWithReasoning`` 把它捡回来放进
+    ``additional_kwargs``，这里只是把它取出来。
+    """
+    value = chunk.additional_kwargs.get(_REASONING_FIELD)
+    return value if isinstance(value, str) else ""
+
+
+def _blocks_from(chunk: BaseMessageChunk) -> list[tuple[str, str]]:
+    """把模型分片拆成 ``[(kind, delta), ...]``，``kind`` 见 ``_BLOCK_*``。
+
+    同一个分片里可能既有思考又有正文（provider 一般把两者分在不同分片里，
+    但不能假定），所以返回列表而不是单个值；正文排在后面，保证「思考块先
+    于正文块」这一顺序在同一个分片内也成立。
+    """
+    deltas: list[tuple[str, str]] = []
+    if reasoning := _chunk_reasoning(chunk):
+        deltas.append((_BLOCK_THINKING, reasoning))
+    if text := _chunk_text(chunk):
+        deltas.append((_BLOCK_TEXT, text))
+    return deltas
+
+
+def _open_block(state: stream_state.StreamState, kind: str) -> stream_state.StreamBlock:
+    """在聚合态里追加一个新块并返回它。
+
+    ``index`` 是本轮内的绝对槽位，但增量事件只引用 ``block_id``：``reset`` 之后
+    槽位会复用，只有身份靠得住。
+    """
+    block = stream_state.StreamBlock(
+        block_id=f"b{len(state.blocks)}",
+        index=len(state.blocks),
+        step=0,
+        kind=kind,
+    )
+    state.blocks.append(block)
+    return block
+
+
+def _block_start_event(block: stream_state.StreamBlock) -> dict[str, str]:
+    """``block-start`` 事件。"""
+    return _sse(
+        {
+            "type": "block-start",
+            "block_id": block.block_id,
+            "index": block.index,
+            "step": block.step,
+            "kind": block.kind,
+            "meta": block.meta,
+        }
+    )
+
+
+def _block_stop_event(block: stream_state.StreamBlock) -> dict[str, str]:
+    """``block-stop`` 事件。"""
+    return _sse(
+        {
+            "type": "block-stop",
+            "block_id": block.block_id,
+            "status": block.status,
+        }
+    )
 
 
 def _session_not_found(raw: str) -> HTTPException:
@@ -418,8 +511,8 @@ def _is_summary(message: BaseMessage) -> bool:
     return message.additional_kwargs.get("lc_source") == _SUMMARY_SOURCE
 
 
-async def _sync_compaction_marker(session_id: uuid.UUID) -> None:
-    """把「已被摘要覆盖的消息条数」记到会话上，供前端画分隔线。
+async def _sync_compaction_marker(session_id: uuid.UUID) -> int:
+    """把「已被摘要覆盖的消息条数」记到会话上供前端画分隔线，并返回该条数。
 
     覆盖条数 = 账本条数 - checkpoint 里保留的非摘要条数。它只服务展示，
     略有偏差不会影响正确性，因此不加事务保证（例如被用户终止的那一轮只留在
@@ -429,12 +522,12 @@ async def _sync_compaction_marker(session_id: uuid.UUID) -> None:
     messages: list[BaseMessage] = state.values.get("messages", [])
     summarized = sum(1 for message in messages if _is_summary(message))
     if summarized == 0:
-        return
+        return 0
     kept = len(messages) - summarized
     async with async_session_maker() as db:
         session = await db.get(ChatSession, session_id)
         if session is None:
-            return
+            return 0
         total = await db.scalar(
             select(func.count())
             .select_from(Message)
@@ -452,6 +545,7 @@ async def _sync_compaction_marker(session_id: uuid.UUID) -> None:
         if session.compacted_message_count != covered:
             session.compacted_message_count = covered
             await db.commit()
+        return covered
 
 
 async def _persist_reply(
@@ -460,8 +554,8 @@ async def _persist_reply(
     *,
     interrupted: bool = False,
     drop_trailing_partial: bool = False,
-) -> None:
-    """落库助手回复，并同步压缩标记。
+) -> int:
+    """落库助手回复，并同步压缩标记；返回当前「已被摘要覆盖的消息条数」。
 
     被终止的轮次不碰压缩标记：此时 checkpoint 里的状态是半截的（用户提问还在、
     回复没有），标记会在下一次正常轮次结束时自己算准。
@@ -473,8 +567,9 @@ async def _persist_reply(
             interrupted=interrupted,
             drop_trailing_partial=drop_trailing_partial,
         )
-    if not interrupted:
-        await _sync_compaction_marker(session_id)
+    if interrupted:
+        return 0
+    return await _sync_compaction_marker(session_id)
 
 
 async def _persist_interrupted(session_id: uuid.UUID, reply: str) -> None:
@@ -492,18 +587,71 @@ async def _persist_interrupted(session_id: uuid.UUID, reply: str) -> None:
         )
 
 
+def _close_open_blocks(
+    state: stream_state.StreamState,
+    block_status: str,
+) -> list[stream_state.StreamBlock]:
+    """把还处于 ``running`` 的块置为终态，返回被关掉的块。"""
+    closed: list[stream_state.StreamBlock] = []
+    for block in state.blocks:
+        if block.status == _BLOCK_RUNNING:
+            block.status = block_status
+            closed.append(block)
+    return closed
+
+
+async def _interrupt_cleanup(
+    writer: stream_state.StreamStateWriter,
+    state: stream_state.StreamState,
+    session_id: uuid.UUID,
+    reply: str,
+) -> None:
+    """断流收尾：过程块置为中断，并把半截正文落库。
+
+    两个动作必须在同一个独立任务里完成：调用方此时正处于被取消的状态，直接
+    ``await`` 会被取消信号立刻打断（见 ``_stream_chat`` 的 ``CancelledError`` 分支）。
+    """
+    _close_open_blocks(state, _BLOCK_INTERRUPTED)
+    state.status = _STATUS_INTERRUPTED
+    state.finished_at = time.time()
+    await writer.flush()
+    await _persist_interrupted(session_id, reply)
+
+
 async def _stream_chat(
     turn: _PendingTurn,
     request: ChatRequest,
 ) -> AsyncIterator[dict[str, str]]:
-    """生成 ``session`` / ``chunk`` / ``done`` / ``error`` 事件。"""
+    """生成过程块事件流。
+
+    事件序列：``session`` → [``reset``] →（``block-start`` → ``block-delta``* →
+    ``block-stop``）* → [``compaction``] → ``done``；失败时以 ``error`` 收尾。
+
+    过程块只服务展示：它们不进 ``messages`` 账本，本轮期间以聚合态留在 Redis
+    （``core/stream_state.py``）；正文照旧由 ``_persist_reply`` 落库。
+    """
     session_id = turn.session_id
+    run_id = uuid.uuid4().hex
+    started_at = time.perf_counter()
     yield _sse({"type": "session", "session_id": str(session_id)})
+    # agent_source 跟着 run-start 走：它描述「这一轮是谁答的」，不是某个块的属性
+    yield _sse({"type": "run-start", "run_id": run_id, "agent_source": AGENT_SOURCE})
+    if request.retry:
+        # 重新生成：前端丢掉 index >= from_index 的过程块，气泡本身保留
+        # （``_retry_turn`` 已经把上一轮没答完的回复作废了）。
+        yield _sse({"type": "reset", "from_index": 0})
 
     collected: list[str] = []
+    state = stream_state.StreamState(run_id=run_id)
+    writer = stream_state.StreamStateWriter(session_id, state)
+    # 先落一次 running 状态：生成期间刷新页面也能看到「正在生成」。
+    await writer.flush()
+    current: stream_state.StreamBlock | None = None
+    first_delta_at: float | None = None
     try:
         await _drop_unanswered_question(turn.session_id)
         messages = await _initial_messages(turn, request)
+        setup_at = time.perf_counter()
         # 挂上回调记录模型实际收到的消息（含摘要那一次调用），用于验收上下文压缩
         config = _thread_config(session_id)
         config["callbacks"] = [ModelCallLogger()]
@@ -520,19 +668,40 @@ async def _stream_chat(
         async for chunk, metadata in stream:
             # 摘要中间件在模型之外也会调用一次 LLM 生成摘要，那些分片同样会
             # 出现在流里；只转发模型节点的输出，否则摘要正文会漏进用户气泡。
+            # 这条过滤与「要不要看中间过程」无关，不能删。
             if metadata.get("langgraph_node") != _MODEL_NODE:
                 continue
-            piece = _chunk_text(chunk)
-            if not piece:
-                continue
-            collected.append(piece)
-            yield _sse(
-                {
-                    "type": "chunk",
-                    "content": piece,
-                    "agent_source": AGENT_SOURCE,
-                }
-            )
+            for kind, delta in _blocks_from(chunk):
+                if current is None or current.kind != kind:
+                    # kind 切换（thinking → text）就意味着上一块结束、新块开始。
+                    if current is not None:
+                        current.status = _BLOCK_COMPLETE
+                        yield _block_stop_event(current)
+                        await writer.flush()
+                    current = _open_block(state, kind)
+                    yield _block_start_event(current)
+                    await writer.flush()
+                if first_delta_at is None:
+                    first_delta_at = time.perf_counter()
+                    logger.debug(
+                        "chat_timing",
+                        stage="first_delta",
+                        at=round(first_delta_at, 6),
+                        setup_ms=round((setup_at - started_at) * 1000, 1),
+                        model_ms=round((first_delta_at - setup_at) * 1000, 1),
+                    )
+                current.text += delta
+                if kind == _BLOCK_TEXT:
+                    # 只有正文进账本；thinking 永不落库、也永不回喂模型。
+                    collected.append(delta)
+                yield _sse(
+                    {
+                        "type": "block-delta",
+                        "block_id": current.block_id,
+                        "delta": delta,
+                    }
+                )
+                await writer.mark_dirty()
     except (asyncio.CancelledError, GeneratorExit) as exc:
         # 用户点了「停止」或者直接关掉页面：客户端断流会取消这个生成器
         # （LangGraph 的 astream 随之关闭，对上游模型的 HTTP 请求一并取消）。
@@ -548,24 +717,46 @@ async def _stream_chat(
         )
         # 独立 Task + shield：写库不会再被这次取消打断，
         # GeneratorExit（生成器被关闭）路径下同样只需要等到它结束。
-        persist = asyncio.create_task(_persist_interrupted(session_id, reply))
+        persist = asyncio.create_task(
+            _interrupt_cleanup(writer, state, session_id, reply)
+        )
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.shield(persist)
         raise
     except Exception as exc:
+        for block in _close_open_blocks(state, _BLOCK_ERROR):
+            yield _block_stop_event(block)
+        state.status = _STATUS_ERROR
+        state.finished_at = time.time()
+        await writer.flush()
         yield _sse({"type": "error", "content": f"模型调用失败：{_short_error(exc)}"})
         return
 
+    if current is not None:
+        current.status = _BLOCK_COMPLETE
+        yield _block_stop_event(current)
+        await writer.flush()
+
     try:
-        await _persist_reply(
+        covered = await _persist_reply(
             session_id,
             "".join(collected),
             drop_trailing_partial=request.retry,
         )
     except Exception as exc:
+        state.status = _STATUS_ERROR
+        state.finished_at = time.time()
+        await writer.flush()
         yield _sse({"type": "error", "content": f"保存回复失败：{_short_error(exc)}"})
         return
 
+    state.status = _STATUS_DONE
+    state.finished_at = time.time()
+    if covered:
+        state.compaction = {"covered": covered}
+    await writer.flush()
+    if covered:
+        yield _sse({"type": "compaction", "covered": covered})
     yield _sse({"type": "done", "session_id": str(session_id)})
 
 
@@ -580,11 +771,20 @@ async def chat(
     直接返回 404，不会先建好一个流再报错。``retry=true`` 时不再写入用户消息，
     而是重发该会话最后一条用户消息。
     """
+    # TTFT 埋点：这条与 ``_stream_chat`` 里的 ``chat_timing`` 用同一套绝对时钟
+    # （``time.perf_counter``），对得上就是 t0 → t1。只在 DEBUG=true 时输出。
+    t0 = time.perf_counter()
     if request.retry:
         turn, effective_request = await _retry_turn(request, user_id=auth.user.id)
     else:
         turn = await _store_user_message(request, user_id=auth.user.id)
         effective_request = request
+    logger.debug(
+        "chat_timing",
+        stage="turn_ready",
+        at=round(time.perf_counter(), 6),
+        ms=round((time.perf_counter() - t0) * 1000, 1),
+    )
     return EventSourceResponse(_stream_chat(turn, effective_request))
 
 
@@ -643,4 +843,32 @@ async def get_chat_summary(
     return SessionSummaryOut(
         session_id=session.id,
         summary="\n\n".join(parts) or None,
+    )
+
+
+@router.get("/chat/{session_id}/stream-state", response_model=StreamStateOut | None)
+async def get_chat_stream_state(
+    session_id: str,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> StreamStateOut | None:
+    """返回本轮（或最近一轮）过程块的聚合态，供刷新页面后回放。
+
+    过程块只服务展示，不进账本，过期或被清理后返回 ``null``：前端拿不到就
+    只渲染账本里的正文，不报错。
+    """
+    session = await _require_session(session_id, user_id=auth.user.id)
+    state = await stream_state.load(session.id)
+    if state is None:
+        return None
+    return StreamStateOut.model_validate(
+        {
+            "session_id": session.id,
+            "run_id": state.run_id,
+            "status": state.status,
+            "started_at": state.started_at,
+            "finished_at": state.finished_at,
+            "blocks": [block.to_dict() for block in state.blocks],
+            "compaction": state.compaction,
+            "usage": state.usage,
+        }
     )

@@ -57,9 +57,14 @@ _NO_COMPACT_TRIGGER = ("messages", 100)
 
 
 class _RecordingChatModel(BaseChatModel):
-    """假模型：记录收到的消息，按固定分片返回内容。"""
+    """假模型：记录收到的消息，按固定分片返回内容。
+
+    ``reasoning_pieces`` 复刻 ``ChatOpenAIWithReasoning`` 的行为：思考分片的
+    ``content`` 是空的，思考正文放在 ``additional_kwargs["reasoning_content"]`` 里。
+    """
 
     pieces: tuple[str, ...] = _FAKE_PIECES
+    reasoning_pieces: tuple[str, ...] = ()
     calls: list[list[BaseMessage]] = Field(default_factory=list)
 
     @property
@@ -69,6 +74,11 @@ class _RecordingChatModel(BaseChatModel):
     @property
     def answer(self) -> str:
         return "".join(self.pieces)
+
+    def _reasoning_kwargs(self) -> dict[str, Any]:
+        if not self.reasoning_pieces:
+            return {}
+        return {"reasoning_content": "".join(self.reasoning_pieces)}
 
     def _record(self, messages: list[BaseMessage]) -> None:
         self.calls.append(list(messages))
@@ -83,10 +93,19 @@ class _RecordingChatModel(BaseChatModel):
         del stop, kwargs
         self._record(messages)
         if run_manager is not None:
+            for piece in self.reasoning_pieces:
+                run_manager.on_llm_new_token(piece)
             for piece in self.pieces:
                 run_manager.on_llm_new_token(piece)
         return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content=self.answer))]
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(
+                        content=self.answer,
+                        additional_kwargs=self._reasoning_kwargs(),
+                    )
+                )
+            ]
         )
 
     async def _astream(
@@ -98,6 +117,16 @@ class _RecordingChatModel(BaseChatModel):
     ) -> AsyncIterator[ChatGenerationChunk]:
         del stop, kwargs
         self._record(messages)
+        for piece in self.reasoning_pieces:
+            chunk = ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    additional_kwargs={"reasoning_content": piece},
+                )
+            )
+            if run_manager is not None:
+                await run_manager.on_llm_new_token(piece, chunk=chunk)
+            yield chunk
         for piece in self.pieces:
             chunk = ChatGenerationChunk(message=AIMessageChunk(content=piece))
             if run_manager is not None:
@@ -144,8 +173,9 @@ def build_agent(
         trigger: tuple[str, int] | None = _NO_COMPACT_TRIGGER,
         keep: tuple[str, int] = _COMPACT_KEEP,
         pieces: tuple[str, ...] = _FAKE_PIECES,
+        reasoning: tuple[str, ...] = (),
     ) -> _Harness:
-        model = _RecordingChatModel(pieces=pieces)
+        model = _RecordingChatModel(pieces=pieces, reasoning_pieces=reasoning)
         graph = _build_graph(model, trigger=trigger, keep=keep)
         monkeypatch.setattr(chat_module, "get_agent", lambda: graph)
         return _Harness(model=model, graph=graph)
@@ -178,9 +208,9 @@ async def _post_chat(
     payload: dict[str, str],
     *,
     token: str,
-) -> tuple[int, list[dict[str, str]]]:
+) -> tuple[int, list[dict[str, Any]]]:
     """发送一次对话请求；状态码为 200 时收集全部 SSE 事件。"""
-    events: list[dict[str, str]] = []
+    events: list[dict[str, Any]] = []
     async with client.stream(
         "POST",
         "/api/v1/chat",
@@ -205,7 +235,7 @@ async def _send(
     session_id: str | None = None,
     sessions: list[str] | None = None,
     retry: bool = False,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """发一轮对话并断言成功，返回事件列表（顺手登记会话以便清理）。"""
     payload = {"message": message}
     if session_id is not None:
@@ -226,6 +256,46 @@ def _texts(messages: list[BaseMessage]) -> list[str]:
 
 def _is_summary(message: BaseMessage) -> bool:
     return message.additional_kwargs.get("lc_source") == "summarization"
+
+
+def _block_kinds(events: list[dict[str, Any]]) -> dict[str, str]:
+    """从事件流里还原 ``block_id`` → ``kind``。"""
+    return {
+        str(event["block_id"]): str(event["kind"])
+        for event in events
+        if event["type"] == "block-start"
+    }
+
+
+def _text_of(events: list[dict[str, Any]], kind: str) -> str:
+    """取某个 ``kind`` 的块拼起来的文本。"""
+    kinds = _block_kinds(events)
+    return "".join(
+        str(event["delta"])
+        for event in events
+        if event["type"] == "block-delta"
+        and kinds.get(str(event["block_id"])) == kind
+    )
+
+
+def _streamed_text(events: list[dict[str, Any]]) -> str:
+    """拼出助手正文。
+
+    只有 ``text`` 块的内容会进账本，``thinking`` 块只服务展示，不能算进正文。
+    """
+    return _text_of(events, "text")
+
+
+def _deltas(events: list[dict[str, Any]]) -> list[str]:
+    """全部块的增量分片（含 thinking），用于断言「流了几个分片」。"""
+    return [str(event["delta"]) for event in events if event["type"] == "block-delta"]
+
+
+def _block_statuses(events: list[dict[str, Any]]) -> list[str]:
+    """按出现顺序取 ``block-stop`` 的状态。"""
+    return [
+        str(event["status"]) for event in events if event["type"] == "block-stop"
+    ]
 
 
 async def test_health(client: httpx.AsyncClient) -> None:
@@ -258,7 +328,7 @@ async def test_chat_streams_session_chunks_and_done(
     assert kinds[0] == "session"
     assert kinds[-1] == "done"
     assert kinds.count("error") == 0
-    streamed = "".join(e["content"] for e in events if e["type"] == "chunk")
+    streamed = _streamed_text(events)
     assert streamed == _FAKE_ANSWER
     assert events[-1]["session_id"] == events[0]["session_id"]
     # 第一轮：模型只看到这一条用户消息
@@ -337,10 +407,15 @@ async def test_chat_compacts_old_turns_into_summary(
         m.content for m in harness.model.calls[1] if isinstance(m.content, str)
     )
 
-    # 关键回归点：摘要正文不能作为 chunk 事件漏给用户
-    streamed = "".join(e["content"] for e in events if e["type"] == "chunk")
+    # 关键回归点：摘要正文不能作为过程块漏给用户
+    streamed = _streamed_text(events)
     assert streamed == _FAKE_ANSWER
     assert "summary of the conversation" not in streamed
+    assert not any(
+        event["type"] == "block-delta"
+        and "summary of the conversation" in event["delta"]
+        for event in events
+    )
 
 
 async def test_compacted_message_count_is_recorded(
@@ -699,7 +774,7 @@ async def _read_until_chunks(
     *,
     chunks: int,
 ) -> list[dict[str, Any]]:
-    """读到指定数量的 chunk 事件就停下（模拟用户在这个时刻点了「停止」）。
+    """读到指定数量的 ``block-delta`` 事件就停下（模拟用户在这个时刻点了「停止」）。
 
     ``_stream_chat`` 产出的是 sse-starlette 的 chunk（``{"data": ...}``），
     这里顺手解出事件负载。
@@ -708,7 +783,7 @@ async def _read_until_chunks(
     async for chunk in stream:
         event = json.loads(chunk["data"])
         received.append(event)
-        if sum(1 for item in received if item["type"] == "chunk") == chunks:
+        if sum(1 for item in received if item["type"] == "block-delta") == chunks:
             break
     return received
 
@@ -733,7 +808,7 @@ async def test_chat_persists_partial_reply_when_user_stops(
 
     stream = chat_module._stream_chat(turn, request)
     received = await _read_until_chunks(stream, chunks=2)
-    partial = "".join(e["content"] for e in received if e["type"] == "chunk")
+    partial = _streamed_text(received)
     assert partial != ""
     assert _FAKE_ANSWER.startswith(partial)
 
@@ -1019,3 +1094,195 @@ async def test_chat_pair_drops_stale_interrupted_reply(
     after = await _ledger(client, token=account_token, session_id=session_id)
     assert [row["role"] for row in after] == ["user", "assistant"]
     assert after == before
+
+
+# ---------------------------------------------------------------------------
+# 过程块可见：思维链分块 + 本轮聚合态回放
+# 设计见 ``document/中间过程可见-设计方案.md``。
+# ---------------------------------------------------------------------------
+
+#: 假模型的思考分片。真实 provider 会把思考放在 ``reasoning_content`` 里。
+_THINKING_PIECES = ("先排查常见原因。", "多半是病毒感染。")
+
+
+def _stream_state_url(session_id: str | uuid.UUID) -> str:
+    return f"/api/v1/chat/{session_id}/stream-state"
+
+
+async def test_chat_streams_thinking_block_then_text_block(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """思考与正文各成一个块，且思考不落账本。"""
+    build_agent(reasoning=_THINKING_PIECES)
+    events = await _send(
+        client,
+        token=account_token,
+        message="How to deal with a cold?",
+        sessions=created_sessions,
+    )
+
+    assert [e["type"] for e in events][:2] == ["session", "run-start"]
+    starts = [e for e in events if e["type"] == "block-start"]
+    assert [e["kind"] for e in starts] == ["thinking", "text"]
+    # index 从 0 起、连续递增
+    assert [e["index"] for e in starts] == [0, 1]
+    assert _text_of(events, "thinking") == "".join(_THINKING_PIECES)
+    assert _streamed_text(events) == _FAKE_ANSWER
+    assert _block_statuses(events) == ["complete", "complete"]
+    assert [e["type"] for e in events][-1] == "done"
+
+    rows = await _ledger(
+        client,
+        token=account_token,
+        session_id=uuid.UUID(events[0]["session_id"]),
+    )
+    assert [row["role"] for row in rows] == ["user", "assistant"]
+    # 账本里只有正文，思考不进 messages 表
+    assert rows[1]["content"] == _FAKE_ANSWER
+    assert _THINKING_PIECES[0] not in rows[1]["content"]
+
+
+async def test_chat_without_thinking_keeps_single_text_block(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """模型不吐思考时，事件流与从前一样只有一个正文块。"""
+    build_agent()
+    events = await _send(
+        client, token=account_token, message="你好", sessions=created_sessions
+    )
+    assert [e["kind"] for e in events if e["type"] == "block-start"] == ["text"]
+    assert _streamed_text(events) == _FAKE_ANSWER
+    assert _block_statuses(events) == ["complete"]
+
+
+async def test_stream_state_replays_blocks_after_turn(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """刷新页面后能取回本轮的思考与正文。"""
+    build_agent(reasoning=_THINKING_PIECES)
+    events = await _send(
+        client, token=account_token, message="你好", sessions=created_sessions
+    )
+    session_id = uuid.UUID(events[0]["session_id"])
+    run_id = next(e["run_id"] for e in events if e["type"] == "run-start")
+
+    response = await client.get(
+        _stream_state_url(session_id), headers=_auth(account_token)
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["session_id"] == str(session_id)
+    assert payload["run_id"] == run_id
+    assert payload["status"] == "done"
+    assert payload["finished_at"] >= payload["started_at"]
+    assert [block["kind"] for block in payload["blocks"]] == ["thinking", "text"]
+    assert [block["status"] for block in payload["blocks"]] == [
+        "complete",
+        "complete",
+    ]
+    assert payload["blocks"][0]["text"] == "".join(_THINKING_PIECES)
+    assert payload["blocks"][1]["text"] == _FAKE_ANSWER
+
+
+async def test_stream_state_marks_interrupted_when_user_stops(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """用户点「停止」后，聚合态要落成中断态而不是一直 running。"""
+    build_agent(reasoning=_THINKING_PIECES)
+    turn, request = await _open_turn(
+        client, token=account_token, sessions=created_sessions
+    )
+
+    stream = chat_module._stream_chat(turn, request)
+    received = await _read_until_chunks(stream, chunks=1)
+    await stream.aclose()
+
+    response = await client.get(
+        _stream_state_url(turn.session_id), headers=_auth(account_token)
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "interrupted"
+    assert payload["finished_at"] is not None
+    kinds = [block["kind"] for block in payload["blocks"]]
+    assert kinds[0] == "thinking"
+    assert all(block["status"] == "interrupted" for block in payload["blocks"])
+    assert len(_deltas(received)) == 1
+    assert payload["blocks"][0]["text"].startswith(_THINKING_PIECES[0][:1])
+
+
+async def test_stream_state_is_per_run_after_retry(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """重新生成会开新的一轮：先发 ``reset``，run_id 变化，块从头开始。"""
+    build_agent(reasoning=_THINKING_PIECES)
+    turn, request = await _open_turn(
+        client, token=account_token, sessions=created_sessions
+    )
+
+    # 先跑一轮并在中途停掉，制造一个「未答完」的会话——只有这种状态才允许重试。
+    first = chat_module._stream_chat(turn, request)
+    first_events: list[dict[str, Any]] = []
+    async for chunk in first:
+        first_events.append(json.loads(chunk["data"]))
+        if len(_deltas(first_events)) == 1:
+            break
+    await first.aclose()
+    first_run = next(e["run_id"] for e in first_events if e["type"] == "run-start")
+
+    second = await _send(
+        client,
+        token=account_token,
+        message="睡眠不好怎么办",
+        session_id=str(turn.session_id),
+        retry=True,
+    )
+
+    assert second[0]["type"] == "session"
+    assert second[1]["type"] == "run-start"
+    assert second[2]["type"] == "reset"
+    assert second[2]["from_index"] == 0
+    second_run = next(e["run_id"] for e in second if e["type"] == "run-start")
+    assert first_run != second_run
+    assert [e["index"] for e in second if e["type"] == "block-start"] == [0, 1]
+    assert _streamed_text(second) == _FAKE_ANSWER
+
+    response = await client.get(
+        _stream_state_url(turn.session_id), headers=_auth(account_token)
+    )
+    payload = response.json()
+    assert payload["run_id"] == second_run
+    assert payload["status"] == "done"
+
+
+async def test_stream_state_rejects_unknown_session(
+    client: httpx.AsyncClient,
+    account_token: str,
+) -> None:
+    response = await client.get(
+        _stream_state_url(uuid.uuid4()), headers=_auth(account_token)
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "session_not_found"
+
+
+async def test_stream_state_requires_authentication(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.get(_stream_state_url(uuid.uuid4()))
+    assert response.status_code == 401

@@ -36,18 +36,32 @@ class Settings(BaseSettings):
     #: 要改 .env 并重启后端容器，光改这里不生效。
     llm_model: str = "deepseek-ai/DeepSeek-V3.2"
 
+    #: 是否让对话模型输出思考过程（reasoning）。
+    #: **默认关闭**：实测 ``deepseek-ai/DeepSeek-V3.2`` 开启后输出 token 约为关闭时的
+    #: 30 倍，首个正文分片从约 3 秒推迟到约 14 秒（见
+    #: ``document/中间过程可见-设计方案.md``）。
+    #: 通过 ``extra_body`` 透传给 provider：硅基流动的参数名是 ``enable_thinking``。
+    #: 摘要专用客户端（``llm/client.py`` 的 ``get_summary_llm``）永远不开启。
+    llm_enable_thinking: bool = False
+
     #: 上下文压缩：触发摘要的 token 阈值（按中文口径估算，见
-    #: ``llm/context.py`` 的 ``chinese_token_counter``）。
-    #: TODO(窗口确认): 2000 只是测试期的小阈值，方便几轮对话内看到压缩；
-    #: 确认模型真实上下文窗口后改成窗口的 35%~40%。
-    summary_trigger_tokens: int = 2000
+    #: ``llm/context.py`` 的 ``chinese_token_counter``，该口径偏保守、会高估）。
+    #: 取值依据：上游实测接受 48K token 输入，``deepseek-ai/DeepSeek-V3.2`` 官方窗口
+    #: 为 128K；这里取窗口的约 1/3，为 system prompt 与模型输出留出余量。
+    #: **别调小**：摘要是一次非流式调用，实测要几十秒，且完全阻塞在回答之前。
+    #: 另外，框架还会拿「上一条回复上报的 token 数」独立判断一次、与本阈值取或，
+    #: 而 provider 上报的数字曾经被打大几百倍（见 ``llm/client.py`` 的
+    #: ``_is_terminal_stream_chunk``），导致摘要无视本阈值每轮都触发；那段修复
+    #: 之前，把这里从 2000 提到 40000 并不起作用。
+    summary_trigger_tokens: int = 40000
+    summary_trigger_fraction: float = 0.8
 
     #: 上下文压缩：摘要后保留的最近消息条数。**必须保持奇数**：
     #: 压缩总是发生在「新用户消息已追加、助手回复还没生成」的时刻，此时消息
     #: 列表长度是偶数（摘要 + 若干完整问答对 + 1 条新提问），保留奇数条才能让
     #: 切点落在完整问答对的边界上；保留偶数条会把一次问答从中间劈开
     #: （提问被摘要、回答留在窗口里）。
-    summary_keep_messages: int = 5
+    summary_keep_messages: int = 20
 
 
 settings = Settings()

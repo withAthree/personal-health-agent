@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,3 +59,57 @@ class SessionSummaryOut(BaseModel):
 
     session_id: uuid.UUID
     summary: str | None = None
+
+
+#: 过程块的类型。``thinking`` / ``text`` 是本版实现，其余为协议预留（见
+#: ``document/中间过程可见-设计方案.md`` §5.4）。
+StreamKind = Literal[
+    "thinking",
+    "text",
+    "tool_call",
+    "tool_result",
+    "plan",
+    "image",
+    "error",
+]
+
+#: 单个过程块的状态。
+StreamBlockStatus = Literal["running", "complete", "interrupted", "error"]
+
+#: 整轮生成的状态。
+StreamStatus = Literal["running", "done", "error", "interrupted"]
+
+
+class StreamBlockOut(BaseModel):
+    """一个过程块（思考 / 正文，将来的工具调用）。"""
+
+    #: 块身份。增量事件只引用它，不引用 ``index``（``reset`` 会让 ``index`` 复用）。
+    block_id: str
+    #: 本次生成内的绝对槽位，从 0 起，跨 step 不重置。
+    index: int
+    #: 轮次，从 0 起；多 Agent 上线前恒为 0。
+    step: int
+    kind: StreamKind
+    text: str
+    status: StreamBlockStatus
+    #: 按 ``kind`` 定义。``thinking`` 预留 ``{"signature": ..., "redacted": ...}``。
+    meta: dict[str, Any] | None = None
+
+
+class StreamStateOut(BaseModel):
+    """``GET /api/v1/chat/{session_id}/stream-state`` 响应体。
+
+    这是本轮对话过程（思维链，将来的工具调用）的聚合态，只服务展示：存在
+    Redis 里、有 TTL，刷新页面后可以回放，**不进 ``messages`` 账本**。
+    """
+
+    session_id: uuid.UUID
+    run_id: str
+    status: StreamStatus
+    started_at: float
+    finished_at: float | None = None
+    blocks: list[StreamBlockOut]
+    #: 本轮结束时算出的「已被摘要覆盖的消息条数」，与账本上的压缩标记同源。
+    compaction: dict[str, Any] | None = None
+    #: 预留，本版不填。
+    usage: dict[str, Any] | None = None

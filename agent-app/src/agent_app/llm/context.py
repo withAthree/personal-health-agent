@@ -19,7 +19,10 @@ from agent_app.llm.client import get_summary_llm
 #: 触发摘要的阈值：按 token 估算（中文口径，见 ``chinese_token_counter``）。
 #: 不用消息条数是因为单条消息长度差很多；不用百分比是因为模型没有
 #: ``profile``（拿不到真实窗口，``("fraction", x)`` 会直接报 ValueError）。
-SUMMARY_TRIGGER: ContextSize = ("tokens", settings.summary_trigger_tokens)
+#: 具体数值见 ``config.settings.summary_trigger_tokens``：它直接决定「摘要那次
+#: 非流式调用」多久出现一次，而这个调用会整个挡在用户的首字等待里。
+SUMMARY_TRIGGER_TOKENS: ContextSize = ("tokens", settings.summary_trigger_tokens)
+SUMMARY_TRIGGER_FRACTION: ContextSize = ("fraction", settings.summary_trigger_fraction)
 
 #: 摘要后保留的最近消息条数。必须是奇数：压缩总是发生在「新用户消息已追加、
 #: 助手回复还没生成」的时刻，此时列表长度是偶数（摘要 + 若干完整问答对 +
@@ -108,7 +111,7 @@ def chinese_token_counter(messages: Iterable[MessageLikeRepresentation]) -> int:
 def build_summarization_middleware(
     model: BaseChatModel | None = None,
     *,
-    trigger: ContextSize | None = SUMMARY_TRIGGER,
+    trigger: ContextSize | None = SUMMARY_TRIGGER_FRACTION,
     keep: ContextSize = SUMMARY_KEEP,
 ) -> SummarizationMiddleware:
     """构造摘要中间件。
