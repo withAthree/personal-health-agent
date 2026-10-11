@@ -25,6 +25,7 @@ from agent_app.config import settings
 from agent_app.core.database import to_libpq_dsn
 from agent_app.llm.client import SYSTEM_PROMPT, get_llm
 from agent_app.llm.context import build_summarization_middleware
+from agent_app.memory.middleware import MemoryContext, MemoryMiddleware
 
 #: checkpoint 连接池上限。
 CHECKPOINT_POOL_MAX_SIZE = 5
@@ -58,13 +59,20 @@ def get_checkpointer() -> AsyncPostgresSaver:
 
 @lru_cache(maxsize=1)
 def get_agent() -> CompiledStateGraph[Any, Any, Any, Any]:
-    """返回带 checkpointer 与摘要中间件的 Agent 单例。"""
+    """返回带 checkpointer、摘要中间件与记忆中间件的 Agent 单例。
+
+    ``context_schema=MemoryContext`` 声明了「调用时必须传当前用户」；
+    ``api/v1/chat.py`` 用 ``astream(..., context=MemoryContext(user_id=...))`` 传进来。
+    记忆**只能**从 ``context`` 进来：这个函数是 ``lru_cache`` 单例，任何按用户
+    变化的内容写在构造参数里都会被第一个用户钉死（见 ``memory/middleware.py``）。
+    """
     return create_agent(
         get_llm(),
         tools=None,
         system_prompt=SYSTEM_PROMPT,
-        middleware=[build_summarization_middleware()],
+        middleware=[build_summarization_middleware(), MemoryMiddleware()],
         checkpointer=get_checkpointer(),
+        context_schema=MemoryContext,
     )
 
 

@@ -43,6 +43,8 @@ from agent_app.core import stream_state
 from agent_app.core.database import async_session_maker
 from agent_app.llm.agent import get_agent
 from agent_app.llm.call_log import ModelCallLogger
+from agent_app.memory.extract import spawn_memory_extraction
+from agent_app.memory.middleware import MemoryContext
 from agent_app.models.chat_session import ChatSession
 from agent_app.models.message import Message
 from agent_app.schemas.chat import (
@@ -243,6 +245,9 @@ class _PendingTurn:
 
     session_id: uuid.UUID
     user_message_id: uuid.UUID
+    #: 本轮属于谁。记忆中间件要靠它去取该用户的长期记忆，
+    #: 且必须在整个流式生成期间可用（那之后接的 HTTP 请求早已返回）。
+    user_id: uuid.UUID
 
 
 async def _store_user_message(
@@ -260,6 +265,7 @@ async def _store_user_message(
         pending = _PendingTurn(
             session_id=session.id,
             user_message_id=message.id,
+            user_id=user_id,
         )
         await db.commit()
         return pending
@@ -325,7 +331,11 @@ async def _retry_turn(
 
     question = rows[last_user]
     return (
-        _PendingTurn(session_id=session.id, user_message_id=question.id),
+        _PendingTurn(
+            session_id=session.id,
+            user_message_id=question.id,
+            user_id=user_id,
+        ),
         request.model_copy(update={"message": question.content}),
     )
 
@@ -665,6 +675,8 @@ async def _stream_chat(
                 {"messages": messages},
                 config,
                 stream_mode="messages",
+                # 长期记忆按用户注入，身份只能走 context（Agent 是 lru_cache 单例）。
+                context=MemoryContext(user_id=turn.user_id),
             ),
         )
         async for chunk, metadata in stream:
@@ -751,6 +763,16 @@ async def _stream_chat(
         await writer.flush()
         yield _sse({"type": "error", "content": f"保存回复失败：{_short_error(exc)}"})
         return
+
+    # 回复已经落库，这一轮才算成立，现在才起后台任务去抽取长期记忆。
+    # 不 await：抽取要走一次模型调用，等它等于把延迟加在 done 之后。
+    # 失败在抽取内部吞掉，不影响这次响应，也不影响下一轮。
+    spawn_memory_extraction(
+        user_id=turn.user_id,
+        session_id=session_id,
+        user_message=request.message,
+        assistant_reply="".join(collected),
+    )
 
     state.status = _STATUS_DONE
     state.finished_at = time.time()

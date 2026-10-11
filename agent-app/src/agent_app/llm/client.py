@@ -119,21 +119,24 @@ def get_llm() -> ChatOpenAI:
 
 
 @lru_cache(maxsize=1)
-def get_summary_llm() -> ChatOpenAI:
-    """返回摘要专用的 LLM 客户端单例。
+def get_utility_llm() -> ChatOpenAI:
+    """返回**旁路任务**专用的 LLM 客户端单例。
 
-    与对话客户端分开：摘要需要一次性拿到完整文本，不需要流式，
-    温度也调低，避免摘要本身被重新演绎。
+    旁路任务 = 上下文摘要 + 长期记忆抽取：都不与用户直接对话，都需要一次性
+    拿到完整结果（非流式），都不希望内容被重新演绎（低温），都可以用比对话
+    更便宜的模型。与对话客户端分开的另一个理由是**调用形态**：这两个任务都在
+    用户等待路径上或紧邻它，换成一个慢模型会直接表现为卡顿。
+
+    模型名取 ``settings.llm_utility_model``，为空时回落到 ``settings.llm_model``
+    ——所以旧配置不用动就能跑，但这两类任务可以独立换模型。
 
     ``profile`` 不能省：压缩阈值用的是百分比口径（``llm/context.py`` 的
     ``SUMMARY_TRIGGER_FRACTION`` / ``SUMMARY_KEEP_FRACTION``），而
     ``SummarizationMiddleware`` 只从 ``model.profile["max_input_tokens"]`` 取
-    窗口大小，取不到就在构造期直接抛 ``ValueError``。中间件由
-    ``llm/agent.py`` 的 ``get_agent()`` 每次请求重新装配，所以少这一个字段
-    会让每次对话都返回错误、而不是等额度用满才出问题。
+    窗口大小，取不到就在**构造期**直接抛 ``ValueError``。
     """
     return ChatOpenAI(
-        model=settings.llm_model,
+        model=settings.llm_utility_model or settings.llm_model,
         api_key=SecretStr(settings.llm_api_key) if settings.llm_api_key else None,
         base_url=settings.llm_base_url,
         temperature=0.2,

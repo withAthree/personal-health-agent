@@ -42,6 +42,7 @@ import agent_app.api.v1.chat as chat_module
 from agent_app.core.database import async_session_maker
 from agent_app.llm.client import SYSTEM_PROMPT
 from agent_app.llm.context import build_summarization_middleware
+from agent_app.memory.middleware import MemoryContext
 from agent_app.models.chat_session import ChatSession
 from agent_app.models.message import Message
 
@@ -159,6 +160,10 @@ def _build_graph(
         system_prompt=SYSTEM_PROMPT,
         middleware=[build_summarization_middleware(model, trigger=trigger, keep=keep)],
         checkpointer=InMemorySaver(),
+        # 与 ``llm/agent.py`` 的 ``get_agent()`` 保持一致：接口层调用时会传
+        # ``context=MemoryContext(...)``，图没有声明 context_schema 就接不住。
+        # 这里不装记忆中间件：它会真去查库，而本文件的用例只关心消息序列。
+        context_schema=MemoryContext,
     )
 
 

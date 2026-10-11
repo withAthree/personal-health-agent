@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from agent_app.config import settings
-from agent_app.llm.client import get_summary_llm
+from agent_app.llm.client import get_utility_llm
 from agent_app.llm.context import (
     SUMMARY_KEEP_FRACTION,
     SUMMARY_KEEP_TOKENS,
@@ -104,13 +104,13 @@ def test_summary_client_carries_model_profile(monkeypatch: pytest.MonkeyPatch) -
     清掉 ``lru_cache``，避免占位密钥的客户端泄给其他用例。
     """
     monkeypatch.setattr(settings, "llm_api_key", "test-key")
-    get_summary_llm.cache_clear()
+    get_utility_llm.cache_clear()
     try:
-        client = get_summary_llm()
+        client = get_utility_llm()
 
         assert client.profile == {"max_input_tokens": settings.llm_max_input_tokens}
     finally:
-        get_summary_llm.cache_clear()
+        get_utility_llm.cache_clear()
 
 
 def test_compaction_keeps_turn_alignment() -> None:

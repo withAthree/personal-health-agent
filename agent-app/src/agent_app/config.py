@@ -36,12 +36,19 @@ class Settings(BaseSettings):
     #: 要改 .env 并重启后端容器，光改这里不生效。
     llm_model: str = "deepseek-ai/DeepSeek-V3.2"
 
+    #: 旁路任务（上下文摘要、长期记忆抽取）用的模型。
+    #: 这两类任务与对话的性质完全不同——非流式、要一次性拿到完整结果、要便宜快，
+    #: 记忆抽取还要模型可靠地吐出结构化输出——所以它们能独立选型，换掉时不影响
+    #: 对话质量。**留空表示回落到 ``llm_model``**。
+    #: 各调用点的要求与验收标准见 ``document/模型使用清单.md``。
+    llm_utility_model: str = ""
+
     #: 是否让对话模型输出思考过程（reasoning）。
     #: **默认关闭**：实测 ``deepseek-ai/DeepSeek-V3.2`` 开启后输出 token 约为关闭时的
     #: 30 倍，首个正文分片从约 3 秒推迟到约 14 秒（见
     #: ``document/中间过程可见-设计方案.md``）。
     #: 通过 ``extra_body`` 透传给 provider：硅基流动的参数名是 ``enable_thinking``。
-    #: 摘要专用客户端（``llm/client.py`` 的 ``get_summary_llm``）永远不开启。
+    #: 旁路任务客户端（``llm/client.py`` 的 ``get_utility_llm``）永远不开启。
     llm_enable_thinking: bool = False
 
     #: 模型的输入窗口（token）。框架的百分比口径（``("fraction", x)``）必须能从
@@ -95,6 +102,24 @@ class Settings(BaseSettings):
             for item in self.upload_allowed_extensions.split(",")
             if item.strip()
         )
+
+    #: 长期记忆：总开关。关闭后既不注入也不抽取（表与代码仍在）。
+    memory_enabled: bool = True
+
+    #: 长期记忆：注入时的总条数上限，超出按「越新越优先」截断。
+    #: 记忆是每次调用都注入的，所以这个值是**每轮对话的固定成本**，
+    #: 调大要按 ``memory_max_injected`` × 单条长度的 token 量重新估算窗口。
+    memory_max_injected: int = 50
+
+    #: 长期记忆：``preference`` / ``insight`` 两类各注入最近多少条。
+    #: ``health_fact`` / ``obstacle`` / ``goal`` 不受此限制——这三类天然少，
+    #: 且漏掉一次就是一次错答，必须「总是在场」。
+    memory_max_per_loose_category: int = 20
+
+    #: 长期记忆：写入时的置信度门槛，低于它的条目直接丢弃；``0`` 表示不过滤
+    #: 只记录。**默认 0 是刻意的**：模型自报的 confidence 没有校准（普遍过度
+    #: 自信、跨模型不可比），先用它攒样本看真实准确率，不要拿它当硬阈值。
+    memory_min_confidence: float = 0.0
 
 
 settings = Settings()
