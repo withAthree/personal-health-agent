@@ -143,3 +143,26 @@
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
 }
+
+/* 首字等待期三点指示器（WaitingIndicator）用的动画。
+   纯 `opacity` 脉冲落在 4px 的小点上几乎看不出变化（实测被误认为「没有动画」），
+   所以改成错峰的上跳 + 淡入，读起来像经典的「正在输入」。
+   `--animate-*` 必须写在 `@theme` 里，Tailwind 才会在用到该工具类时把
+   `@keyframes` 一起打进产物。 */
+@theme {
+  --animate-dot-wave: dot-wave 1.2s ease-in-out infinite;
+
+  @keyframes dot-wave {
+    0%,
+    70%,
+    100% {
+      opacity: 0.3;
+      transform: translateY(0);
+    }
+
+    35% {
+      opacity: 1;
+      transform: translateY(-3px);
+    }
+  }
+}

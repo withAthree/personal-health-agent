@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Bot, Plus, RotateCcw, SendHorizontal, Sparkles, Square } from 'lucide-react'
+import { Bot, Brain, Plus, RotateCcw, SendHorizontal, Sparkles, Square } from 'lucide-react'
 import { useForm, useWatch } from 'react-hook-form'
 import { z } from 'zod'
 
@@ -155,6 +155,10 @@ function BubbleRow({
   const thinkingBlocks = bubble.blocks.filter((block) => block.kind === 'thinking')
   const thinkingText = thinkingBlocks.map((block) => block.text).join('')
   const thinkingRunning = thinkingBlocks.some((block) => block.status === 'running')
+  // 首字等待期：`session`/`run-start` 已经回来、第一个过程块还没到。实测这段
+  // 空等有 1–14 秒（上游排队波动），此前什么都不渲染，助手一侧只剩一个头像，
+  // 看起来像卡死了
+  const waiting = bubble.pending && bubble.blocks.length === 0 && bubble.content === ''
   // 还在思考、正文一个字都还没来时，不显示空气泡：思考面板本身就是「正在处理」
   // 的反馈，也就不再需要原来的骨架屏
   const showAnswer =
@@ -171,7 +175,9 @@ function BubbleRow({
         </span>
       )}
       <div className="max-w-[85%] space-y-1">
-        {isUser ? null : (
+        {isUser ? null : waiting ? (
+          <WaitingIndicator />
+        ) : (
           <ThinkingBlock
             key={bubble.runId ?? 'history'}
             text={thinkingText}
@@ -248,6 +254,34 @@ function BubbleRow({
           </Badge>
         ) : null}
       </div>
+    </div>
+  )
+}
+
+/** 三个小圆点的错峰延迟（对应 `--animate-dot-wave` 的 1.2s 周期）。 */
+const WAITING_DOT_DELAYS = [0, 150, 300] as const
+
+/**
+ * 首字等待期的占位反馈。
+ *
+ * 刻意做成与 `ThinkingBlock` 头部同款（同等字号、同一个大脑图标、同一个位置）：
+ * 首个思考分片到达时两个组件在原地交接，不会跳一下。三个点用错峰的上跳波，
+ * 而不是 `animate-pulse`——后者落在 6px 的小点上几乎看不出变化。
+ */
+function WaitingIndicator() {
+  return (
+    <div className="flex items-center gap-1 text-[11px] text-muted-foreground" role="status">
+      <Brain className="size-3.5 animate-pulse" aria-hidden="true" />
+      <span>正在思考</span>
+      <span className="flex items-center gap-0.5" aria-hidden="true">
+        {WAITING_DOT_DELAYS.map((delay) => (
+          <span
+            key={delay}
+            className="size-1.5 animate-dot-wave rounded-full bg-current"
+            style={{ animationDelay: `${delay}ms` }}
+          />
+        ))}
+      </span>
     </div>
   )
 }
