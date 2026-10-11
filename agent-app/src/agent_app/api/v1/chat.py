@@ -34,6 +34,7 @@ from langchain_core.messages import (
     RemoveMessage,
 )
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -48,12 +49,14 @@ from agent_app.memory.middleware import MemoryContext
 from agent_app.models.chat_session import ChatSession
 from agent_app.models.message import Message
 from agent_app.schemas.chat import (
+    SESSION_TITLE_MAX_LEN,
     ChatRequest,
     MessageOut,
     SessionListOut,
     SessionMessagesOut,
     SessionOut,
     SessionSummaryOut,
+    SessionUpdateIn,
     StreamStateOut,
 )
 
@@ -232,7 +235,7 @@ async def _resolve_session(
 
     session = ChatSession(
         user_id=user_id,
-        title=request.message.strip()[:50] or "新对话",
+        title=request.message.strip()[:SESSION_TITLE_MAX_LEN] or "新对话",
     )
     db.add(session)
     await db.flush()
@@ -816,35 +819,125 @@ async def chat(
 async def list_chat_sessions(
     auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> SessionListOut:
-    """返回当前用户的会话列表，最近更新的在前。
+    """返回当前用户的会话列表：置顶的在前，组内最近更新的在前。
 
-    左侧「对话记录列表」的数据源。只按 ``updated_at`` 排序，不带消息正文，
-    消息仍由 ``GET /chat/{session_id}/messages`` 拉取。
+    左侧「对话记录列表」的数据源。不带消息正文，消息仍由
+    ``GET /chat/{session_id}/messages`` 拉取。
     """
     async with async_session_maker() as db:
         result = await db.execute(
             select(ChatSession)
             .where(ChatSession.user_id == auth.user.id)
-            # ``updated_at`` 精度可能相同（同一秒内新建多条），用 id 兜底保证顺序稳定
-            .order_by(ChatSession.updated_at.desc(), ChatSession.id.desc())
+            # 置顶项整组排在前面，组内仍是「最近说过的最前」；``updated_at`` 精度
+            # 可能相同（同一秒内新建多条），用 id 兜底保证顺序稳定
+            .order_by(
+                ChatSession.is_pinned.desc(),
+                ChatSession.updated_at.desc(),
+                ChatSession.id.desc(),
+            )
         )
         sessions = result.scalars().all()
     return SessionListOut(sessions=[SessionOut.model_validate(row) for row in sessions])
 
 
+async def _require_session_row(
+    db: AsyncSession,
+    raw: str,
+    *,
+    user_id: uuid.UUID,
+) -> ChatSession:
+    """在当前事务里按归属取回会话；不存在或不属于当前用户都返回 404。
+
+    写接口（重命名 / 置顶 / 删除）用这个：拿到的是挂在 ``db`` 上的持久对象，
+    可以直接改字段后 commit。只读接口走 ``_require_session``。
+    """
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == _parse_session_id(raw),
+            ChatSession.user_id == user_id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise _session_not_found(raw)
+    return session
+
+
 async def _require_session(session_id: str, *, user_id: uuid.UUID) -> ChatSession:
     """按归属取回会话；不存在或不属于当前用户都返回 404。"""
     async with async_session_maker() as db:
-        result = await db.execute(
-            select(ChatSession).where(
-                ChatSession.id == _parse_session_id(session_id),
-                ChatSession.user_id == user_id,
+        return await _require_session_row(db, session_id, user_id=user_id)
+
+
+async def _drop_session_traces(session_id: uuid.UUID) -> None:
+    """清理会话的两处派生数据：LangGraph checkpoint 与 Redis 过程块。
+
+    两者都不进账本、丢了也能重建，所以整体 fail-soft：删会话在账本里已经完成，
+    清理失败只记 warning。checkpoint 存的是给模型看的上下文（用户原文的副本），
+    所以在删除会话时主动抹掉，而不是等它自己过期。
+    """
+    checkpointer = get_agent().checkpointer
+    # langgraph 把 ``checkpointer`` 的类型写成 ``BaseCheckpointSaver | bool | None``
+    # （``True`` 表示用默认内存实现），这里只处理真正的存储实例
+    if isinstance(checkpointer, BaseCheckpointSaver):
+        try:
+            await checkpointer.adelete_thread(str(session_id))
+        except Exception as exc:
+            logger.warning(
+                "session_checkpoint_clear_failed",
+                session_id=str(session_id),
+                error=str(exc),
             )
+    await stream_state.clear(session_id)
+
+
+@router.patch("/chat/{session_id}", response_model=SessionOut)
+async def update_chat_session(
+    session_id: str,
+    payload: SessionUpdateIn,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> SessionOut:
+    """重命名 / 置顶会话。
+
+    只改请求体里显式给出的字段（见 ``SessionUpdateIn``），返回改完之后的会话：
+    前端据此就地更新列表，不必再拉一次 ``GET /chat/sessions``。
+    """
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": "请求体里没有任何要修改的字段", "code": "empty_update"},
         )
-        session = result.scalar_one_or_none()
-        if session is None:
-            raise _session_not_found(session_id)
-        return session
+
+    async with async_session_maker() as db:
+        session = await _require_session_row(db, session_id, user_id=auth.user.id)
+        for field, value in changes.items():
+            setattr(session, field, value)
+        # ``updated_at`` 由 TimestampMixin 的 onupdate 由数据库侧刷新；它在 flush
+        # 之后处于过期状态，异步下访问会直接报 MissingGreenlet，所以显式 refresh
+        await db.commit()
+        await db.refresh(session)
+        return SessionOut.model_validate(session)
+
+
+@router.delete("/chat/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_chat_session(
+    session_id: str,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> None:
+    """删除会话。
+
+    消息随外键级联删除。长期记忆不跟着删：记忆是用户级的事实，来源会话消失后
+    ``memory_items.source_session_id`` 置空即可（见 ``models/memory.py``）。
+    """
+    async with async_session_maker() as db:
+        session = await _require_session_row(db, session_id, user_id=auth.user.id)
+        target = session.id
+        # 直接发 DELETE 而不是 ORM ``db.delete``：``messages.chat_session_id`` 带
+        # ondelete=CASCADE，交给数据库一次删干净，不必先把整段对话读进内存
+        await db.execute(delete(ChatSession).where(ChatSession.id == target))
+        await db.commit()
+    await _drop_session_traces(target)
 
 
 @router.get("/chat/{session_id}/messages", response_model=SessionMessagesOut)

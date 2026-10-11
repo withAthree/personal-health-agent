@@ -208,6 +208,17 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _session_order(
+    client: httpx.AsyncClient,
+    token: str,
+    ids: set[str],
+) -> list[str]:
+    """从 ``GET /chat/sessions`` 里按后端返回的顺序取出这几个会话。"""
+    response = await client.get("/api/v1/chat/sessions", headers=_auth(token))
+    assert response.status_code == 200, response.text
+    return [s["id"] for s in response.json()["sessions"] if s["id"] in ids]
+
+
 async def _post_chat(
     client: httpx.AsyncClient,
     payload: dict[str, str],
@@ -677,6 +688,235 @@ async def test_list_sessions_hides_other_users_sessions(
     response = await client.get("/api/v1/chat/sessions", headers=_auth(bob))
     assert response.status_code == 200, response.text
     assert response.json()["sessions"] == []
+
+
+async def test_rename_session_changes_title(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """重命名：返回改完的会话，列表里跟着变，前后空白由服务端剪掉。"""
+    build_agent()
+    session_id = (
+        await _send(
+            client,
+            token=account_token,
+            message="感冒了怎么办",
+            sessions=created_sessions,
+        )
+    )[0]["session_id"]
+
+    response = await client.patch(
+        f"/api/v1/chat/{session_id}",
+        json={"title": "  感冒护理  "},
+        headers=_auth(account_token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["title"] == "感冒护理"
+
+    listing = await client.get("/api/v1/chat/sessions", headers=_auth(account_token))
+    ours = [s for s in listing.json()["sessions"] if s["id"] == session_id]
+    assert [s["title"] for s in ours] == ["感冒护理"]
+
+
+async def test_update_session_rejects_blank_title(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """标题不能清空：只给了空白字符同样是非法请求。"""
+    build_agent()
+    session_id = (
+        await _send(
+            client, token=account_token, message="第一问", sessions=created_sessions
+        )
+    )[0]["session_id"]
+
+    response = await client.patch(
+        f"/api/v1/chat/{session_id}",
+        json={"title": "   "},
+        headers=_auth(account_token),
+    )
+    assert response.status_code == 422
+
+
+async def test_update_session_rejects_empty_body(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """两个字段都没给就是空修改，直接拒绝而不走一遍无意义的写库。"""
+    build_agent()
+    session_id = (
+        await _send(
+            client, token=account_token, message="第一问", sessions=created_sessions
+        )
+    )[0]["session_id"]
+
+    response = await client.patch(
+        f"/api/v1/chat/{session_id}", json={}, headers=_auth(account_token)
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "empty_update"
+
+
+async def test_pinned_session_comes_first(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """置顶：被置顶的会话排在最新会话之前，即使别的会话刚说过话。"""
+    build_agent()
+    older = (
+        await _send(
+            client, token=account_token, message="第一问", sessions=created_sessions
+        )
+    )[0]["session_id"]
+    newer = (
+        await _send(
+            client, token=account_token, message="第二问", sessions=created_sessions
+        )
+    )[0]["session_id"]
+    assert await _session_order(client, account_token, {older, newer}) == [newer, older]
+
+    response = await client.patch(
+        f"/api/v1/chat/{older}",
+        json={"is_pinned": True},
+        headers=_auth(account_token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["is_pinned"] is True
+
+    # 给 newer 再说一轮：它是「最近更新」的那个，但置顶的 older 仍然在最前
+    await _send(client, token=account_token, message="补问", session_id=newer)
+    assert await _session_order(client, account_token, {older, newer}) == [older, newer]
+
+
+async def test_unpin_session_clears_the_flag(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """取消置顶后列表里的标记跟着消失。"""
+    build_agent()
+    session_id = (
+        await _send(
+            client, token=account_token, message="第一问", sessions=created_sessions
+        )
+    )[0]["session_id"]
+    await client.patch(
+        f"/api/v1/chat/{session_id}",
+        json={"is_pinned": True},
+        headers=_auth(account_token),
+    )
+
+    response = await client.patch(
+        f"/api/v1/chat/{session_id}",
+        json={"is_pinned": False},
+        headers=_auth(account_token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["is_pinned"] is False
+
+    listing = await client.get("/api/v1/chat/sessions", headers=_auth(account_token))
+    ours = [s for s in listing.json()["sessions"] if s["id"] == session_id]
+    assert [s["is_pinned"] for s in ours] == [False]
+
+
+async def test_delete_session_removes_its_messages(
+    client: httpx.AsyncClient,
+    account_token: str,
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """删除会话：账本里的消息一起删掉，列表和消息接口都再也查不到。"""
+    build_agent()
+    session_id = (
+        await _send(
+            client, token=account_token, message="第一问", sessions=created_sessions
+        )
+    )[0]["session_id"]
+
+    response = await client.delete(
+        f"/api/v1/chat/{session_id}", headers=_auth(account_token)
+    )
+    assert response.status_code == 204, response.text
+    assert response.content == b""
+
+    listing = await client.get("/api/v1/chat/sessions", headers=_auth(account_token))
+    assert session_id not in [s["id"] for s in listing.json()["sessions"]]
+
+    messages = await client.get(
+        f"/api/v1/chat/{session_id}/messages", headers=_auth(account_token)
+    )
+    assert messages.status_code == 404
+
+    async with async_session_maker() as db:
+        left = await db.execute(
+            select(func.count())
+            .select_from(Message)
+            .where(Message.session_id == uuid.UUID(session_id))
+        )
+    assert left.scalar_one() == 0
+
+
+async def test_session_actions_hide_other_users_sessions(
+    client: httpx.AsyncClient,
+    register_account: Callable[[], Awaitable[str]],
+    build_agent: Callable[..., _Harness],
+    created_sessions: list[str],
+) -> None:
+    """别人的会话：重命名 / 置顶 / 删除一律 404，并且真的没被动过。"""
+    build_agent()
+    alice = await register_account()
+    bob = await register_account()
+    session_id = (
+        await _send(
+            client, token=alice, message="Alice 的问题", sessions=created_sessions
+        )
+    )[0]["session_id"]
+
+    rename = await client.patch(
+        f"/api/v1/chat/{session_id}",
+        json={"title": "被改名了"},
+        headers=_auth(bob),
+    )
+    assert rename.status_code == 404
+    assert rename.json()["detail"]["code"] == "session_not_found"
+
+    pin = await client.patch(
+        f"/api/v1/chat/{session_id}",
+        json={"is_pinned": True},
+        headers=_auth(bob),
+    )
+    assert pin.status_code == 404
+    assert pin.json()["detail"]["code"] == "session_not_found"
+
+    remove = await client.delete(f"/api/v1/chat/{session_id}", headers=_auth(bob))
+    assert remove.status_code == 404
+    assert remove.json()["detail"]["code"] == "session_not_found"
+
+    listing = await client.get("/api/v1/chat/sessions", headers=_auth(alice))
+    ours = [s for s in listing.json()["sessions"] if s["id"] == session_id]
+    assert [s["title"] for s in ours] == ["Alice 的问题"]
+    assert [s["is_pinned"] for s in ours] == [False]
+
+
+async def test_session_actions_require_authentication(
+    client: httpx.AsyncClient,
+) -> None:
+    session_id = uuid.uuid4()
+
+    rename = await client.patch(f"/api/v1/chat/{session_id}", json={"title": "x"})
+    assert rename.status_code == 401
+
+    remove = await client.delete(f"/api/v1/chat/{session_id}")
+    assert remove.status_code == 401
 
 
 async def test_summary_endpoint_returns_none_before_compaction(

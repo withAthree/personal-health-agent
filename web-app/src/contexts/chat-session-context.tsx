@@ -10,7 +10,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 
-import { fetchSessions, type ChatSessionSummary } from '@/lib/api'
+import { deleteSession, fetchSessions, updateSession, type ChatSessionSummary } from '@/lib/api'
 import { clearLastSession, readLastSession, saveLastSession } from '@/lib/session'
 
 interface ChatSessionContextValue {
@@ -33,6 +33,18 @@ interface ChatSessionContextValue {
   sessionsLoading: boolean
   /** 重新拉取会话列表（新建会话、一轮结束、标题变化后调用）。 */
   refreshSessions: () => Promise<void>
+  /**
+   * 重命名会话。
+   *
+   * 失败时会把 `ApiError` 抛给调用方：列表操作由用户主动触发，静默失败比
+   * 报错更难排查。成功后会自己重拉一次列表（改名会刷新 `updated_at`，
+   * 会话在列表里的位置要跟着变）。
+   */
+  renameSession: (id: string, title: string) => Promise<void>
+  /** 置顶 / 取消置顶会话，成功后会自己重拉列表（置顶会改变排序）。 */
+  pinSession: (id: string, isPinned: boolean) => Promise<void>
+  /** 删除会话；删掉的正好是当前会话时自动回到「新对话」。 */
+  removeSession: (id: string) => Promise<void>
 }
 
 const ChatSessionContext = createContext<ChatSessionContextValue | null>(null)
@@ -68,6 +80,35 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     setSessions(await loadSessions())
   }, [])
 
+  const renameSession = useCallback(
+    async (id: string, title: string) => {
+      await updateSession(id, { title })
+      await refreshSessions()
+    },
+    [refreshSessions],
+  )
+
+  const pinSession = useCallback(
+    async (id: string, isPinned: boolean) => {
+      await updateSession(id, { is_pinned: isPinned })
+      await refreshSessions()
+    },
+    [refreshSessions],
+  )
+
+  const removeSession = useCallback(
+    async (id: string) => {
+      await deleteSession(id)
+      // 删掉的正是当前会话时要把本地记忆一并清掉，否则对话页会继续按旧 ID
+      // 拉账本，只能拿回 404。
+      if (id === sessionId) {
+        startNewChat()
+      }
+      await refreshSessions()
+    },
+    [sessionId, startNewChat, refreshSessions],
+  )
+
   // 首屏拉一次。setSessions 放在异步回调里，而不是 effect 体里直接调：后者会同步
   // 触发一轮额外渲染（react-hooks 的 set-state-in-effect 就是拦这个的）
   useEffect(() => {
@@ -92,8 +133,21 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       sessions: sessions ?? [],
       sessionsLoading: sessions === null,
       refreshSessions,
+      renameSession,
+      pinSession,
+      removeSession,
     }),
-    [sessionId, openSession, startNewChat, newChatToken, sessions, refreshSessions],
+    [
+      sessionId,
+      openSession,
+      startNewChat,
+      newChatToken,
+      sessions,
+      refreshSessions,
+      renameSession,
+      pinSession,
+      removeSession,
+    ],
   )
 
   return <ChatSessionContext.Provider value={value}>{children}</ChatSessionContext.Provider>

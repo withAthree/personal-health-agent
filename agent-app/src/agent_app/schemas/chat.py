@@ -4,7 +4,10 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+#: 会话标题长度上限。自动生成（取首条提问）与用户手动重命名共用这一条规则。
+SESSION_TITLE_MAX_LEN = 50
 
 
 class ChatRequest(BaseModel):
@@ -49,9 +52,40 @@ class SessionOut(BaseModel):
 
     id: uuid.UUID
     title: str | None = None
+    #: 置顶的会话排在列表最前面（组内仍按 ``updated_at`` 倒序）。
+    is_pinned: bool = False
     created_at: datetime
     #: 会话内最后一次写入的时间；列表按它倒序，最近说过的排最前。
     updated_at: datetime
+
+
+class SessionUpdateIn(BaseModel):
+    """``PATCH /api/v1/chat/{session_id}`` 请求体：重命名与置顶。
+
+    只处理**显式提供**的字段，所以「只改标题」「只改置顶」都只要发那一个字段。
+    两个字段都不接受 ``null``：字段校验器只在字段真的出现在请求体里时才被调用，
+    因此在里面拒绝 ``None`` 就等于拒绝「清空标题 / 清空置顶」。
+    """
+
+    title: str | None = Field(default=None, description="新标题，不能为空")
+    is_pinned: bool | None = Field(default=None, description="是否置顶")
+
+    @field_validator("title")
+    @classmethod
+    def _clean_title(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("标题不能为空")
+        if len(cleaned) > SESSION_TITLE_MAX_LEN:
+            raise ValueError(f"标题最多 {SESSION_TITLE_MAX_LEN} 个字符")
+        return cleaned
+
+    @field_validator("is_pinned")
+    @classmethod
+    def _require_pinned(cls, value: bool | None) -> bool | None:
+        if value is None:
+            raise ValueError("is_pinned 不能为 null")
+        return value
 
 
 class SessionListOut(BaseModel):

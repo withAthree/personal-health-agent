@@ -246,12 +246,23 @@ export async function fetchSessionMessages(sessionId: string): Promise<SessionMe
 export interface ChatSessionSummary {
   id: string
   title: string | null
+  /** 置顶的会话排在最前；同名组内仍按 `updated_at` 倒序。 */
+  is_pinned: boolean
   created_at: string
   updated_at: string
 }
 
+/** 会话标题长度上限，与后端 `SESSION_TITLE_MAX_LEN` 保持一致。 */
+export const SESSION_TITLE_MAX_LEN = 50
+
+/** 可以改的会话字段：只带上要改的那个，没带的字段后端保持原值。 */
+export interface SessionUpdate {
+  title?: string
+  is_pinned?: boolean
+}
+
 /**
- * 拉取当前用户的会话列表，最近更新的在前。
+ * 拉取当前用户的会话列表，置顶的在前，其余按最近更新倒序。
  *
  * 对应 `GET /api/v1/chat/sessions`；只返回列表元信息，消息正文仍走
  * `GET /chat/{session_id}/messages`。
@@ -259,6 +270,31 @@ export interface ChatSessionSummary {
 export async function fetchSessions(): Promise<ChatSessionSummary[]> {
   const response = await http.get<{ sessions: ChatSessionSummary[] }>('/chat/sessions')
   return response.data.sessions
+}
+
+/**
+ * 重命名 / 置顶 / 取消置顶会话。
+ *
+ * 对应 `PATCH /api/v1/chat/{session_id}`，返回改完之后的会话；调用方拿到
+ * 返回值后仍建议重拉一次列表，因为改 `title` 也会刷新 `updated_at`，
+ * 会话在列表里的位置会跟着变。
+ */
+export async function updateSession(
+  sessionId: string,
+  patch: SessionUpdate,
+): Promise<ChatSessionSummary> {
+  const response = await http.patch<ChatSessionSummary>(`/chat/${sessionId}`, patch)
+  return response.data
+}
+
+/**
+ * 删除会话，连同它的全部消息（后端按外键级联删除）。
+ *
+ * 对应 `DELETE /api/v1/chat/{session_id}`，成功时后端返回 204 无正文。
+ * 从长期记忆里抽取出来的条目不会被一起删掉。
+ */
+export async function deleteSession(sessionId: string): Promise<void> {
+  await http.delete(`/chat/${sessionId}`)
 }
 
 /** 服务端聚合态里的一个过程块，对应后端 `StreamBlockOut`。 */

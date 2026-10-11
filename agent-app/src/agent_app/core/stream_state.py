@@ -147,6 +147,19 @@ async def load(session_id: uuid.UUID) -> StreamState | None:
     return _from_dict(data)
 
 
+async def clear(session_id: uuid.UUID) -> None:
+    """丢弃某会话的过程块（删除会话时调用）。
+
+    与 ``load`` / ``_save`` 一样 fail-soft：Redis 异常只记 warning。删会话本身
+    在账本里已经完成，不能被这个纯展示数据的清理拖失败。
+    """
+    key = _key(session_id)
+    try:
+        await get_redis().delete(key)
+    except Exception as exc:
+        logger.warning("stream_state_clear_failed", key=key, error=str(exc))
+
+
 class StreamStateWriter:
     """按节流把 ``StreamState`` 写进 Redis。
 
