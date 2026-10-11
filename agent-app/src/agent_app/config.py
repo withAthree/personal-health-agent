@@ -31,20 +31,24 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = "https://api.siliconflow.cn/v1"
 
-    #: 模型名。**这个默认值只是兜底**：只要 .env / 环境变量里配了 LLM_MODEL，
-    #: 就以后者为准（pydantic-settings 优先级：环境变量 > 代码默认值），所以换模型
-    #: 要改 .env 并重启后端容器，光改这里不生效。
+    #: 对话模型名。**开发期直接改这里**：后端跑 ``uvicorn --reload``，改完进程自动
+    #: 重启、``lru_cache`` 的客户端跟着重建，不用碰容器。上线或临时切换时再用 .env
+    #: 里的 ``LLM_MODEL`` 覆盖（pydantic-settings 优先级：环境变量 > 代码默认值），
+    #: 那种情况下才需要重建容器——``docker compose restart`` 不会重读 ``env_file``，
+    #: 要用 ``up -d``。
     llm_model: str = "deepseek-ai/DeepSeek-V3.2"
 
     #: 上下文摘要（压缩）用的模型。摘要是纯改写任务，输入长、输出短，且**在用户
     #: 等待路径上**，所以要便宜且够快。**留空表示回落到 ``llm_model``**。
-    #: 各调用点的要求与验收标准见 ``document/模型使用清单.md``。
-    llm_summary_model: str = ""
+    #: 开发期直接改这里即可（理由见 ``llm_model``）；各调用点的要求与验收标准见
+    #: ``document/模型使用清单.md``。
+    llm_summary_model: str = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
 
     #: 长期记忆抽取用的模型。它必须在后台可靠地吐出符合 schema 的结构化输出
     #: （``memory/extract.py`` 的 ``MemoryOps``），判错会污染之后每一轮对话，
     #: 所以选型标准与摘要不同，两者分开配置。**留空表示回落到 ``llm_model``**。
-    llm_memory_model: str = ""
+    #: 开发期也直接改这里。
+    llm_memory_model: str = "Qwen/Qwen2.5-7B-Instruct"
 
     #: 是否让对话模型输出思考过程（reasoning）。
     #: **默认关闭**：实测 ``deepseek-ai/DeepSeek-V3.2`` 开启后输出 token 约为关闭时的

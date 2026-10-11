@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-10T13:31:49Z",
-  "updated_at": "2026-10-11T11:41:06Z",
+  "updated_at": "2026-10-11T11:52:33Z",
   "files": {
     ".agents/skills/deep-agents-core/SKILL.md": {
       "role": "index",
@@ -353,9 +353,9 @@
     },
     "agent-app/.env.example": {
       "role": "index",
-      "sha256": "af490b406b7b54765bafd033500bf923190daf74dea3d52f56655cc7de61beb6",
-      "size": 1296,
-      "normalized_sha256": "3c3a44c90c15367e9613483e2b10b2269026e56ca55c966c91cb4b4de0e944cf"
+      "sha256": "f3fcb6b2e65f5d5032bd6c71bd0074f97c47c3df7eeed47588e9954f22f9f29b",
+      "size": 1384,
+      "normalized_sha256": "9b6032d348d8e3e8dade1f8cae18bafd5ee9c2b28f666844530e8a81374da5fc"
     },
     "agent-app/.python-version": {
       "role": "index",
@@ -473,9 +473,9 @@
     },
     "agent-app/src/agent_app/config.py": {
       "role": "index",
-      "sha256": "14ce7cdf779691a39c591136b9d6d97f0f53045963402c3111de678ef1db0a71",
-      "size": 6826,
-      "normalized_sha256": "14ce7cdf779691a39c591136b9d6d97f0f53045963402c3111de678ef1db0a71"
+      "sha256": "7b548f2b4582f4784cdc4998935d12ed837f0e0d7c93e7e61c0f6ed3feb37e5e",
+      "size": 7169,
+      "normalized_sha256": "7b548f2b4582f4784cdc4998935d12ed837f0e0d7c93e7e61c0f6ed3feb37e5e"
     },
     "agent-app/src/agent_app/core/__init__.py": {
       "role": "index",
@@ -707,9 +707,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "cca1cbaccc6c0ba6fe602ca9dcb66b324a4c2c729bcfb150f753e76f1fc9eb4a",
-      "size": 77282,
-      "normalized_sha256": "cca1cbaccc6c0ba6fe602ca9dcb66b324a4c2c729bcfb150f753e76f1fc9eb4a"
+      "sha256": "59ae35fbf388ba57b003897675109579d0ad371436876ba1a4712ef7ece484e6",
+      "size": 77414,
+      "normalized_sha256": "59ae35fbf388ba57b003897675109579d0ad371436876ba1a4712ef7ece484e6"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -749,9 +749,9 @@
     },
     "document/模型使用清单.md": {
       "role": "index",
-      "sha256": "ae3254461540f7341d79afe7c364654c6fcb4b7370f314140fab7b5333b13c51",
-      "size": 11410,
-      "normalized_sha256": "ae3254461540f7341d79afe7c364654c6fcb4b7370f314140fab7b5333b13c51"
+      "sha256": "793af048ad2127fe17a43fa465bf379c7096de0f7ced057d93336fea24a9a095",
+      "size": 12031,
+      "normalized_sha256": "793af048ad2127fe17a43fa465bf379c7096de0f7ced057d93336fea24a9a095"
     },
     "document/设计文档.md": {
       "role": "index",
