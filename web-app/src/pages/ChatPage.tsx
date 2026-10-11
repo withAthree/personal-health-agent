@@ -1,14 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { ChangeEvent, FormEvent } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Bot, Brain, Plus, RotateCcw, SendHorizontal, Sparkles, Square } from 'lucide-react'
+import {
+  ArrowUp,
+  Bot,
+  Brain,
+  CircleAlert,
+  FileText,
+  LoaderCircle,
+  Paperclip,
+  Plus,
+  RotateCcw,
+  Sparkles,
+  Square,
+  X,
+} from 'lucide-react'
 import { useForm, useWatch } from 'react-hook-form'
 import { z } from 'zod'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Field, FieldDescription, FieldError, FieldGroup } from '@/components/ui/field'
+import { Field, FieldError, FieldGroup } from '@/components/ui/field'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
@@ -20,6 +33,7 @@ import {
   fetchSessionSummary,
   fetchStreamState,
   streamChat,
+  uploadFile,
   type ChatMessage,
   type StreamBlockKind,
   type StreamBlockStatus,
@@ -72,6 +86,17 @@ interface DeltaItem {
   delta: string
 }
 
+/** 输入框上方附件卡片的状态。 */
+interface Attachment {
+  /** 本地自增 id：异步上传回来时用它判断选中的还是不是当前这个文件。 */
+  id: number
+  name: string
+  size: number
+  status: 'uploading' | 'done' | 'failed'
+  /** 失败时的提示文案；上传中 / 成功时为 null。 */
+  error: string | null
+}
+
 /**
  * 把攒下的分片一次性合并进对应气泡。
  *
@@ -113,6 +138,23 @@ function elapsedSince(startedAt: number | null): number | null {
 
 const isAbortError = (error: unknown): boolean =>
   error instanceof Error && error.name === 'AbortError'
+
+/** 把字节数格式化成参考图那样的大小文案（1.24KB / 2.00MB / 512B）。 */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${String(bytes)}B`
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(2)}KB`
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(2)}MB`
+}
+
+/** 取扩展名并大写（`report.md` → `MD`）；没有扩展名时返回空串。 */
+function fileExtension(name: string): string {
+  const dot = name.lastIndexOf('.')
+  return dot === -1 ? '' : name.slice(dot + 1).toUpperCase()
+}
 
 const composerSchema = z.object({
   message: z.string().trim().min(1, '请输入内容'),
@@ -370,6 +412,58 @@ function withStreamState(
   }
 }
 
+/** 输入框上方的附件卡片：图标 + 文件名 + 大小 / 状态，对应设计参考图。 */
+function AttachmentCard({
+  attachment,
+  onRemove,
+}: {
+  attachment: Attachment
+  onRemove: () => void
+}) {
+  const { status } = attachment
+  const subtitle =
+    status === 'uploading'
+      ? '上传中...'
+      : status === 'failed'
+        ? (attachment.error ?? '上传失败')
+        : `${fileExtension(attachment.name)} ${formatFileSize(attachment.size)}`.trim()
+
+  return (
+    <div className="flex w-fit max-w-full items-center gap-3 rounded-xl border bg-card px-3 py-2">
+      <span className="grid size-8 shrink-0 place-items-center">
+        {status === 'uploading' ? (
+          <LoaderCircle className="size-5 animate-spin text-muted-foreground" aria-hidden="true" />
+        ) : status === 'failed' ? (
+          <CircleAlert className="size-5 text-destructive" aria-hidden="true" />
+        ) : (
+          <FileText className="size-5 text-primary" aria-hidden="true" />
+        )}
+      </span>
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium">{attachment.name}</p>
+        <p
+          className={cn(
+            'truncate text-xs',
+            status === 'failed' ? 'text-destructive' : 'text-muted-foreground',
+          )}
+          role={status === 'uploading' ? 'status' : undefined}
+        >
+          {subtitle}
+        </p>
+      </div>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        aria-label="移除附件"
+        onClick={onRemove}
+      >
+        <X />
+      </Button>
+    </div>
+  )
+}
+
 export function ChatPage() {
   const { sessionId, newChatToken, openSession, startNewChat, refreshSessions } =
     useChatSession()
@@ -383,6 +477,7 @@ export function ChatPage() {
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summary, setSummary] = useState<string | null>(null)
+  const [attachment, setAttachment] = useState<Attachment | null>(null)
 
   const nextIdRef = useRef(1)
   const abortRef = useRef<AbortController | null>(null)
@@ -397,6 +492,9 @@ export function ChatPage() {
   const loadedSessionRef = useRef<string | null>(null)
   // 上一次的「新对话」计数，用来把「点新对话清空界面」和「会话变化」区分开
   const lastNewChatTokenRef = useRef(newChatToken)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  // 附件 id 自增：异步上传回来时用它判断「还是不是当前这个文件」
+  const attachmentSeqRef = useRef(0)
 
   const composer = useForm<ComposerValues>({
     resolver: zodResolver(composerSchema),
@@ -503,6 +601,9 @@ export function ChatPage() {
     setCompactedCount(0)
     setSummary(null)
     setSummaryOpen(false)
+    // 丢掉附件卡片；同时让还在路上的上传结果失效（id 对不上就被忽略）
+    attachmentSeqRef.current += 1
+    setAttachment(null)
   }, [newChatToken])
 
   // 监听滚动，判断用户是否还停在底部；手动往上翻后就不再自动跟随
@@ -617,6 +718,52 @@ export function ChatPage() {
    */
   function stopStreaming(): void {
     abortRef.current?.abort()
+  }
+
+  /** 点击回形针：转交给隐藏的 file input。 */
+  function pickFile(): void {
+    fileInputRef.current?.click()
+  }
+
+  /**
+   * 选中文件后立刻上传（参考图就是选完即传，卡片先显示「上传中...」）。
+   *
+   * 一次只带一个附件：新选的文件会替换上一个。后端目前只校验、不保存，上传成功
+   * 也只表示「这个文件能收」。
+   */
+  async function onFileChange(event: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.[0]
+    // 清空 value，否则连续选同一个文件不会再触发 change
+    event.target.value = ''
+    if (file === undefined) {
+      return
+    }
+
+    const id = attachmentSeqRef.current + 1
+    attachmentSeqRef.current = id
+    setAttachment({ id, name: file.name, size: file.size, status: 'uploading', error: null })
+    try {
+      const uploaded = await uploadFile(file)
+      setAttachment((current) =>
+        current?.id === id
+          ? { ...current, name: uploaded.filename, size: uploaded.size, status: 'done' }
+          : current,
+      )
+    } catch (err) {
+      setAttachment((current) =>
+        current?.id === id
+          ? {
+              ...current,
+              status: 'failed',
+              error: err instanceof Error ? err.message : '上传失败',
+            }
+          : current,
+      )
+    }
+  }
+
+  function removeAttachment(): void {
+    setAttachment(null)
   }
 
   /**
@@ -825,6 +972,8 @@ export function ChatPage() {
       return
     }
     composer.reset()
+    // 附件跟着这条消息走：发出去就把卡片收掉（后端当前只校验、不保存）
+    setAttachment(null)
     void send(values.message)
   }
 
@@ -933,15 +1082,28 @@ export function ChatPage() {
         </div>
       ) : null}
 
-      <footer className="shrink-0 border-t px-5 py-4">
+      <footer className="shrink-0 px-5 pt-2 pb-4">
         <form noValidate className="w-full" onSubmit={onFormSubmit}>
           <FieldGroup className="gap-2">
             <Field data-invalid={messageError !== undefined}>
-              <div className="flex items-end gap-3">
+              {/* 仿 DeepSeek：外层圆角容器同时包住附件卡片、多行输入和底部工具栏 */}
+              <div
+                className={cn(
+                  'rounded-3xl border bg-card p-2 transition-colors',
+                  messageError !== undefined
+                    ? 'border-destructive'
+                    : 'focus-within:border-ring',
+                )}
+              >
+                {attachment === null ? null : (
+                  <div className="px-1 pt-1 pb-2">
+                    <AttachmentCard attachment={attachment} onRemove={removeAttachment} />
+                  </div>
+                )}
                 <Textarea
                   rows={2}
                   placeholder="输入你的问题…"
-                  className="max-h-40 min-h-14 flex-1 resize-none"
+                  className="max-h-40 min-h-14 resize-none border-0! bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0! aria-invalid:ring-0! dark:bg-transparent"
                   aria-invalid={messageError !== undefined}
                   {...composer.register('message')}
                   onKeyDown={(event) => {
@@ -957,19 +1119,43 @@ export function ChatPage() {
                     }
                   }}
                 />
-                <Button
-                  type={sending ? 'button' : 'submit'}
-                  size="lg"
-                  className="h-14 shrink-0 px-5"
-                  onClick={sending ? stopStreaming : undefined}
-                  disabled={!sending && message.trim() === ''}
-                >
-                  {sending ? <Square /> : <SendHorizontal />}
-                  {sending ? '停止' : '发送'}
-                </Button>
+                <div className="flex items-center justify-end gap-1 px-1 pt-1">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    aria-hidden="true"
+                    tabIndex={-1}
+                    onChange={(event) => void onFileChange(event)}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-lg"
+                    className="shrink-0 rounded-full"
+                    aria-label="添加附件"
+                    title="添加附件"
+                    disabled={sending || attachment?.status === 'uploading'}
+                    onClick={pickFile}
+                  >
+                    <Paperclip />
+                  </Button>
+                  <Button
+                    type={sending ? 'button' : 'submit'}
+                    size="icon-lg"
+                    className="shrink-0 rounded-full"
+                    aria-label={sending ? '停止生成' : '发送'}
+                    title={sending ? '停止生成' : '发送'}
+                    onClick={sending ? stopStreaming : undefined}
+                    disabled={
+                      !sending && (message.trim() === '' || attachment?.status === 'uploading')
+                    }
+                  >
+                    {sending ? <Square /> : <ArrowUp />}
+                  </Button>
+                </div>
               </div>
               <FieldError errors={[messageError]} />
-              <FieldDescription>Enter 发送，Shift + Enter 换行</FieldDescription>
             </Field>
           </FieldGroup>
         </form>

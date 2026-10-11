@@ -306,3 +306,28 @@ export async function fetchSessionSummary(sessionId: string): Promise<string | n
   )
   return response.data.summary
 }
+
+/** 上传成功后的文件元信息，对应后端 `UploadedFileOut`。 */
+export interface UploadedFile {
+  filename: string
+  size: number
+  content_type: string
+  extension: string
+}
+
+/**
+ * 上传单个文件。
+ *
+ * 当前后端是**占位版**：校验扩展名与大小后就把文件丢掉（不落盘、不入库），返回的
+ * 只是回显的元信息；真正的解析 / 清洗 / 入库是后续阶段。失败时抛出带 `code` 的
+ * `ApiError`（如 `unsupported_file_type` / `file_too_large`）。
+ */
+export async function uploadFile(file: File): Promise<UploadedFile> {
+  const form = new FormData()
+  form.append('file', file)
+  // 不显式设 Content-Type：axios 遇到 FormData 会清掉实例默认的 application/json，
+  // 交给浏览器补上带 boundary 的 multipart/form-data。
+  // 超时放宽到 60s：默认 15s 对 5MB 上传偏紧。
+  const response = await http.post<UploadedFile>('/upload', form, { timeout: 60_000 })
+  return response.data
+}

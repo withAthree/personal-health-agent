@@ -74,5 +74,27 @@ class Settings(BaseSettings):
     summary_keep_messages: int = 21
     summary_keep_fraction: float = 0.1
 
+    #: 文件上传：单文件大小上限（字节）。超过直接拒绝，不落盘。
+    #: 当前阶段上传只是占位（校验完即丢弃），这个上限仍要生效，否则等于开放
+    #: 一个无限制的接收端。
+    upload_max_bytes: int = 5 * 1024 * 1024
+
+    #: 文件上传：允许的扩展名（小写、不含点），逗号分隔。
+    #: 刻意用字符串而不是集合：pydantic-settings 对复杂类型默认按 JSON 解析，
+    #: 写成"jpg,png"会在启动时直接解析失败。取用时走下面的
+    #: ``upload_allowed_extension_set``。
+    upload_allowed_extensions: str = (
+        "jpg,jpeg,png,gif,webp,heic,pdf,txt,md,csv,json,docx,xlsx"
+    )
+
+    @property
+    def upload_allowed_extension_set(self) -> frozenset[str]:
+        """把逗号分隔的扩展名配置解析成集合（忽略空白与空项）。"""
+        return frozenset(
+            item.strip().lower()
+            for item in self.upload_allowed_extensions.split(",")
+            if item.strip()
+        )
+
 
 settings = Settings()

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-10T13:31:49Z",
-  "updated_at": "2026-10-11T08:30:11Z",
+  "updated_at": "2026-10-11T09:07:37Z",
   "files": {
     ".agents/skills/deep-agents-core/SKILL.md": {
       "role": "index",
@@ -459,11 +459,17 @@
       "size": 34408,
       "normalized_sha256": "792c2b119e649657aa99d6d6f647a0942568fa67c6aa97a59474db72f574846f"
     },
+    "agent-app/src/agent_app/api/v1/upload.py": {
+      "role": "index",
+      "sha256": "8c5b1aa4b81287b17d52b4e44cb41d31e09fad0a3bb3c3660bd87347fc840838",
+      "size": 3080,
+      "normalized_sha256": "8c5b1aa4b81287b17d52b4e44cb41d31e09fad0a3bb3c3660bd87347fc840838"
+    },
     "agent-app/src/agent_app/config.py": {
       "role": "index",
-      "sha256": "9d1d2acddcf7ce8a9a13193f7e1bd9620543bda97ae54b106517c165d552f850",
-      "size": 4071,
-      "normalized_sha256": "f7e245ba24c89ee3c35de674c38b9699da2af055b9b84bb902e8c37bef816c06"
+      "sha256": "64a6b27c9b306bacbfd0fc2e2ab5bf31f20273a64db4deaa902710b14e91eef6",
+      "size": 5131,
+      "normalized_sha256": "8083aa87ec3b36fbe19de2faa596b0bb00fd96f4fb904664e6318a083b8a704f"
     },
     "agent-app/src/agent_app/core/__init__.py": {
       "role": "index",
@@ -551,9 +557,9 @@
     },
     "agent-app/src/agent_app/main.py": {
       "role": "index",
-      "sha256": "8083bd4070e5dd14dec9ada7d8336e931fccb271d1e603de96bf7efb56729fa8",
-      "size": 1530,
-      "normalized_sha256": "8083bd4070e5dd14dec9ada7d8336e931fccb271d1e603de96bf7efb56729fa8"
+      "sha256": "c27fa9839b6bb08c1c278d06051021a8f63c1ac8079f4c79b51334cac8f3bb73",
+      "size": 1624,
+      "normalized_sha256": "c27fa9839b6bb08c1c278d06051021a8f63c1ac8079f4c79b51334cac8f3bb73"
     },
     "agent-app/src/agent_app/models/__init__.py": {
       "role": "index",
@@ -603,6 +609,12 @@
       "size": 4285,
       "normalized_sha256": "351537f14593a8533397d25e2c1c10d6e7d72813be5665d2aed31bb77fe5fbd6"
     },
+    "agent-app/src/agent_app/schemas/file.py": {
+      "role": "index",
+      "sha256": "a84809195ef5a03be1208e19c2651686d29dcadc4fa707f73149530a45355ab8",
+      "size": 723,
+      "normalized_sha256": "a84809195ef5a03be1208e19c2651686d29dcadc4fa707f73149530a45355ab8"
+    },
     "agent-app/tests/conftest.py": {
       "role": "observe",
       "sha256": "cfc0d3b9f46d8e8629013d95af19cd46831a7baf4c8c1a3bcaef06e0388b1556",
@@ -633,6 +645,12 @@
       "size": 5269,
       "normalized_sha256": "599c128cb65243f9df439bc5ba9fd0e5f37931cb6d07d47b562793550a80944a"
     },
+    "agent-app/tests/test_upload.py": {
+      "role": "observe",
+      "sha256": "4b0351ebc7662e0be7716aa8a0e5e72d400b5f3acc0f41d34cc158a6525a347a",
+      "size": 3196,
+      "normalized_sha256": "4b0351ebc7662e0be7716aa8a0e5e72d400b5f3acc0f41d34cc158a6525a347a"
+    },
     "agent-app/uv.lock": {
       "role": "index",
       "sha256": "9452ded164d4357757ba68b7998926a79d7dee6953fbb513023880bdb6ac478f",
@@ -641,9 +659,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "1e2625aa92d1462d6a8550ae9ad08a1e0f523cc129f50f28ad5acce3f0d7c294",
-      "size": 69332,
-      "normalized_sha256": "1e2625aa92d1462d6a8550ae9ad08a1e0f523cc129f50f28ad5acce3f0d7c294"
+      "sha256": "dc31f38a956099a7ed97262874da2ca8c1524703d6130ea96e7bbd8baeb8ddb5",
+      "size": 71050,
+      "normalized_sha256": "dc31f38a956099a7ed97262874da2ca8c1524703d6130ea96e7bbd8baeb8ddb5"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -893,9 +911,9 @@
     },
     "web-app/src/lib/api.ts": {
       "role": "index",
-      "sha256": "117836e484a4353d207db53b030f36297c38ac315871db2d646e66915033dcfd",
-      "size": 9941,
-      "normalized_sha256": "6cb9b933b345cbc70360bbd57164dbeb2f7f5572dcb566d1ec276db902b3cca6"
+      "sha256": "bb04ef56859f59a6cf52e1b325a94eb35368f38e58b19c80edb4654583a62eb9",
+      "size": 10959,
+      "normalized_sha256": "6a6fae84be6f9f13d6a010c6a405659e33b13f8884635b8c006df22a3a9153a5"
     },
     "web-app/src/lib/auth.ts": {
       "role": "index",
@@ -935,9 +953,9 @@
     },
     "web-app/src/pages/ChatPage.tsx": {
       "role": "index",
-      "sha256": "aad0726620ac47b9cc44a8789b901c6d7d352849c19fc2676db9b104ff16e3dd",
-      "size": 36793,
-      "normalized_sha256": "fc7f01ee2b41bcc0df9993a7ca6ddc7e7a71819a4925189e8f345eb07ab670dc"
+      "sha256": "0d96ba02b5b6466debb647e3074ab16d7f2e018680b2d07d1d8f962e0d11bd44",
+      "size": 43230,
+      "normalized_sha256": "1c97535c29ffa7803dc6aa80db50809075f64de982ae72d1432707b33c0d087d"
     },
     "web-app/src/pages/DashboardPage.tsx": {
       "role": "index",

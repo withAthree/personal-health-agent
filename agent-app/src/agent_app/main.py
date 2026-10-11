@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agent_app.api.v1.auth import router as auth_router
 from agent_app.api.v1.chat import router as chat_router
+from agent_app.api.v1.upload import router as upload_router
 from agent_app.config import settings
 from agent_app.core.logging import configure_logging
 from agent_app.llm.agent import close_checkpointer, open_checkpointer
@@ -48,6 +49,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(chat_router)
+app.include_router(upload_router)
 
 
 @app.get("/health")
