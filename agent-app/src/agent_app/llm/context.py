@@ -16,24 +16,31 @@ from langchain_core.messages.utils import count_tokens_approximately
 from agent_app.config import settings
 from agent_app.llm.client import get_summary_llm
 
-#: 触发摘要的阈值：按 token 估算（中文口径，见 ``chinese_token_counter``）。
-#: 不用消息条数是因为单条消息长度差很多；不用百分比是因为模型没有
-#: ``profile``（拿不到真实窗口，``("fraction", x)`` 会直接报 ValueError）。
-#: 具体数值见 ``config.settings.summary_trigger_tokens``：它直接决定「摘要那次
-#: 非流式调用」多久出现一次，而这个调用会整个挡在用户的首字等待里。
+#: 触发摘要的阈值。**当前生效的是百分比口径**（``build_summarization_middleware``
+#: 的默认参数），按模型窗口的 ``settings.summary_trigger_fraction`` 触发。
+#: 不用消息条数是因为单条消息长度差很多。
+#: 走百分比要求模型带 ``profile``（框架从 ``model.profile["max_input_tokens"]``
+#: 取窗口），取不到会在构造期抛 ``ValueError``、让每次对话都失败；摘要客户端的
+#: ``profile`` 由 ``llm/client.py`` 的 ``get_summary_llm`` 提供。
+#: 数值直接决定「摘要那次非流式调用」多久出现一次，而这个调用会整个挡在用户的
+#: 首字等待里。``SUMMARY_TRIGGER_TOKENS`` 是等价的绝对口径，当前未被使用。
 SUMMARY_TRIGGER_TOKENS: ContextSize = ("tokens", settings.summary_trigger_tokens)
 SUMMARY_TRIGGER_FRACTION: ContextSize = ("fraction", settings.summary_trigger_fraction)
 
-#: 摘要后保留的最近消息条数。必须是奇数：压缩总是发生在「新用户消息已追加、
-#: 助手回复还没生成」的时刻，此时列表长度是偶数（摘要 + 若干完整问答对 +
-#: 1 条新提问），保留奇数条才能让切点落在完整问答对的边界上；保留偶数条会把
-#: 一次问答从中间劈开（提问被摘要、回答留在窗口里）。
-SUMMARY_KEEP: ContextSize = ("messages", settings.summary_keep_messages)
+#: 摘要后保留多少最近内容。**当前生效的也是百分比口径**，保留窗口的
+#: ``settings.summary_keep_fraction``（同样是构造期就要 ``profile``）。
+#: ``SUMMARY_KEEP_TOKENS`` 是条数口径，当前未被使用；用它时必须是奇数：
+#: 压缩总是发生在「新用户消息已追加、助手回复还没生成」的时刻，此时列表长度是
+#: 偶数（摘要 + 若干完整问答对 + 1 条新提问），保留奇数条才能让切点落在完整
+#: 问答对的边界上；保留偶数条会把一次问答从中间劈开（提问被摘要、回答留在
+#: 窗口里）。
+SUMMARY_KEEP_TOKENS: ContextSize = ("messages", settings.summary_keep_messages)
+SUMMARY_KEEP_FRACTION: ContextSize = ("fraction", settings.summary_keep_fraction)
 
 #: 中文 token 估算的每个 token 对应字符数。
 #: 框架默认值是按英文校准的 4.0，中文会被低估约 4 倍（实测 200 个汉字
 #: 只算出 54 token），必须显式传值，否则 token 阈值形同虚设。
-CHINESE_CHARS_PER_TOKEN = 1.5
+CHINESE_CHARS_PER_TOKEN = 2.0
 
 
 #: 官方 ``DEFAULT_SUMMARY_PROMPT`` 的中文译文（逐句直译，不改结构）。
@@ -112,11 +119,13 @@ def build_summarization_middleware(
     model: BaseChatModel | None = None,
     *,
     trigger: ContextSize | None = SUMMARY_TRIGGER_FRACTION,
-    keep: ContextSize = SUMMARY_KEEP,
+    keep: ContextSize = SUMMARY_KEEP_FRACTION,
 ) -> SummarizationMiddleware:
     """构造摘要中间件。
 
     ``model`` 为空时使用摘要专用客户端；测试可注入假模型，避免真实调用。
+    ``trigger`` / ``keep`` 默认是百分比口径，要求该模型带 ``profile``
+    （摘要客户端已带；注入假模型时要自己补，否则这里就抛 ``ValueError``）。
     摘要提示词是框架内置 ``DEFAULT_SUMMARY_PROMPT`` 的中文译文（``SUMMARY_PROMPT``）。
     """
     return SummarizationMiddleware(

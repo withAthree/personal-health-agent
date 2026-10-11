@@ -44,24 +44,35 @@ class Settings(BaseSettings):
     #: 摘要专用客户端（``llm/client.py`` 的 ``get_summary_llm``）永远不开启。
     llm_enable_thinking: bool = False
 
-    #: 上下文压缩：触发摘要的 token 阈值（按中文口径估算，见
-    #: ``llm/context.py`` 的 ``chinese_token_counter``，该口径偏保守、会高估）。
-    #: 取值依据：上游实测接受 48K token 输入，``deepseek-ai/DeepSeek-V3.2`` 官方窗口
-    #: 为 128K；这里取窗口的约 1/3，为 system prompt 与模型输出留出余量。
+    #: 模型的输入窗口（token）。框架的百分比口径（``("fraction", x)``）必须能从
+    #: 模型的 ``profile`` 里读到这个值，否则 ``SummarizationMiddleware`` 在构造期
+    #: 就抛 ``ValueError: Model profile information is required...``——所以它不只
+    #: 决定下面两个百分比算成多少 token，还是它们能否生效的前提。
+    #: 值取 ``deepseek-ai/DeepSeek-V3.2`` 的官方窗口（上游实测接受 48K token 输入）。
+    llm_max_input_tokens: int = 128000
+
+    #: 上下文压缩：触发摘要的阈值。**当前生效的是百分比口径**
+    #: （``llm/context.py`` 的 ``SUMMARY_TRIGGER_FRACTION``），按
+    #: ``llm_max_input_tokens`` 的 0.8 触发。估算口径见 ``llm/context.py`` 的
+    #: ``chinese_token_counter``（按中文校准，偏保守、会高估）。
     #: **别调小**：摘要是一次非流式调用，实测要几十秒，且完全阻塞在回答之前。
     #: 另外，框架还会拿「上一条回复上报的 token 数」独立判断一次、与本阈值取或，
     #: 而 provider 上报的数字曾经被打大几百倍（见 ``llm/client.py`` 的
     #: ``_is_terminal_stream_chunk``），导致摘要无视本阈值每轮都触发；那段修复
     #: 之前，把这里从 2000 提到 40000 并不起作用。
+    #: ``summary_trigger_tokens`` 是等价的绝对口径，当前未被使用。
     summary_trigger_tokens: int = 40000
     summary_trigger_fraction: float = 0.8
 
-    #: 上下文压缩：摘要后保留的最近消息条数。**必须保持奇数**：
-    #: 压缩总是发生在「新用户消息已追加、助手回复还没生成」的时刻，此时消息
-    #: 列表长度是偶数（摘要 + 若干完整问答对 + 1 条新提问），保留奇数条才能让
-    #: 切点落在完整问答对的边界上；保留偶数条会把一次问答从中间劈开
-    #: （提问被摘要、回答留在窗口里）。
-    summary_keep_messages: int = 20
+    #: 上下文压缩：摘要后保留多少最近内容。**当前生效的是百分比口径**
+    #: （``llm/context.py`` 的 ``SUMMARY_KEEP_FRACTION``），保留窗口的 0.1。
+    #: ``summary_keep_messages`` 是等价的条数口径，当前未被使用；用它时
+    #: **必须保持奇数**：压缩总是发生在「新用户消息已追加、助手回复还没生成」
+    #: 的时刻，此时消息列表长度是偶数（摘要 + 若干完整问答对 + 1 条新提问），
+    #: 保留奇数条才能让切点落在完整问答对的边界上；保留偶数条会把一次问答从
+    #: 中间劈开（提问被摘要、回答留在窗口里）。
+    summary_keep_messages: int = 21
+    summary_keep_fraction: float = 0.1
 
 
 settings = Settings()

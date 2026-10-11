@@ -124,6 +124,13 @@ def get_summary_llm() -> ChatOpenAI:
 
     与对话客户端分开：摘要需要一次性拿到完整文本，不需要流式，
     温度也调低，避免摘要本身被重新演绎。
+
+    ``profile`` 不能省：压缩阈值用的是百分比口径（``llm/context.py`` 的
+    ``SUMMARY_TRIGGER_FRACTION`` / ``SUMMARY_KEEP_FRACTION``），而
+    ``SummarizationMiddleware`` 只从 ``model.profile["max_input_tokens"]`` 取
+    窗口大小，取不到就在构造期直接抛 ``ValueError``。中间件由
+    ``llm/agent.py`` 的 ``get_agent()`` 每次请求重新装配，所以少这一个字段
+    会让每次对话都返回错误、而不是等额度用满才出问题。
     """
     return ChatOpenAI(
         model=settings.llm_model,
@@ -131,4 +138,5 @@ def get_summary_llm() -> ChatOpenAI:
         base_url=settings.llm_base_url,
         temperature=0.2,
         streaming=False,
+        profile={"max_input_tokens": settings.llm_max_input_tokens},
     )
