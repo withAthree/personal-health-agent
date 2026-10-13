@@ -24,11 +24,16 @@ export class ApiError extends Error {
   }
 }
 
-/** 业务接口共用的 axios 实例；`/api/v1` 由 Vite dev server 代理到后端。 */
+/**
+ * 业务接口共用的 axios 实例；`/api/v1` 由 Vite dev server 代理到后端。
+ *
+ * 刻意不设默认 `Content-Type`：axios 1.x 在请求头已是 `application/json` 时会把 FormData
+ * 序列化成 JSON（`axios/lib/defaults/index.js` 的 transformRequest），上传接口会因此 422。
+ * 不设时 axios 按 payload 推断——普通对象给 `application/json`，FormData 交给浏览器补 boundary。
+ */
 export const http = axios.create({
   baseURL: '/api/v1',
   timeout: 15_000,
-  headers: { 'Content-Type': 'application/json' },
 })
 
 http.interceptors.request.use((config) => {
