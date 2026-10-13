@@ -5,8 +5,19 @@
 
 from agent_app.models.base import Base
 from agent_app.models.chat_session import ChatSession
+from agent_app.models.file import FileMetadata
+from agent_app.models.health import HealthMetric, HealthRecord
 from agent_app.models.memory import MemoryItem
 from agent_app.models.message import Message
 from agent_app.models.user import User
 
-__all__ = ["Base", "ChatSession", "MemoryItem", "Message", "User"]
+__all__ = [
+    "Base",
+    "ChatSession",
+    "FileMetadata",
+    "HealthMetric",
+    "HealthRecord",
+    "MemoryItem",
+    "Message",
+    "User",
+]

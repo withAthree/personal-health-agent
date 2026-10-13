@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     #: 开发期也直接改这里。
     llm_memory_model: str = "Qwen/Qwen2.5-7B-Instruct"
 
+    #: 文档解析抽取用的模型：把 OCR 出来的纯文本转成 ``dataList`` /
+    #: ``otherInfoList`` 结构。它**与对话主流程解耦**——不复用 ``get_llm`` 的
+    #: 客户端，也不跟着 ``llm_model`` 走，因为这个模型的选型将来可能单独更换。
+    #: **留空表示回落到 ``llm_model``**。开发期直接改这里即可（理由见
+    #: ``llm_model``）。
+    llm_parse_model: str = "deepseek-ai/DeepSeek-V3.2"
+
     #: 是否让对话模型输出思考过程（reasoning）。
     #: **默认关闭**：实测 ``deepseek-ai/DeepSeek-V3.2`` 开启后输出 token 约为关闭时的
     #: 30 倍，首个正文分片从约 3 秒推迟到约 14 秒（见

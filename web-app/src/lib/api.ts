@@ -345,12 +345,14 @@ export async function fetchSessionSummary(sessionId: string): Promise<string | n
 
 /** 上传成功后的文件元信息，对应后端 `UploadedFileOut`。 */
 export interface UploadedFile {
-  /** 文件 id，后续解析接口凭它找回文件。 */
+  /** 文件 id，后续查询解析状态凭它找回文件。 */
   id: string
   filename: string
   size: number
   content_type: string
   extension: string
+  /** 解析状态，刚上传时是 `pending`。 */
+  status: string
 }
 
 /**
@@ -366,5 +368,78 @@ export async function uploadFile(file: File): Promise<UploadedFile> {
   // 由浏览器补上带 boundary 的 multipart/form-data。
   // 超时放宽到 60s：默认 15s 对 5MB 上传偏紧。
   const response = await http.post<UploadedFile>('/upload', form, { timeout: 60_000 })
+  return response.data
+}
+
+/** 解析流水线的状态，对应后端 `file_metadata.status`。 */
+export type FileStatus = 'pending' | 'parsing' | 'parsed' | 'failed' | 'confirmed'
+
+/** `dataList` 里的一条指标。字段名与后端样例一致，是蛇形。 */
+export interface ParsedMetric {
+  en_name: string
+  zh_name: string
+  value: string
+  unit: string
+  reference_range: string
+}
+
+/** 解析草稿的 JSON 结构，`dataList` / `otherInfoList` 是驼峰。 */
+export interface ParsedContent {
+  /** 归一化日期（`YYYY-MM-DD`），解析不出为 null。 */
+  date: string | null
+  /** 日期原文。 */
+  date_raw: string
+  dataList: ParsedMetric[]
+  otherInfoList: string[]
+}
+
+/** 单个文件的解析状态与草稿，对应后端 `FileDetailOut`。 */
+export interface FileDetail {
+  id: string
+  original_name: string
+  /** 文件大小（字节）。 */
+  size: number
+  status: FileStatus
+  error_message: string | null
+  parsed_content: ParsedContent | null
+  created_at: string
+}
+
+/**
+ * 拉取当前用户的文件列表，最新的在前。
+ *
+ * 页面刷新后用它恢复列表，不需要把文件状态留在浏览器里。
+ */
+export async function listFiles(): Promise<FileDetail[]> {
+  const response = await http.get<{ files: FileDetail[] }>('/files')
+  return response.data.files
+}
+
+/** 查询单个文件的解析状态与草稿。轮询用这个。 */
+export async function fetchFile(fileId: string): Promise<FileDetail> {
+  const response = await http.get<FileDetail>(`/files/${fileId}`)
+  return response.data
+}
+
+/** `confirm` 的响应，对应后端 `ConfirmedFileOut`。 */
+export interface ConfirmedFile {
+  id: string
+  /** 正式表 health_records 的记录 id。 */
+  record_id: string
+  status: FileStatus
+  metric_count: number
+}
+
+/**
+ * 确认入库：把用户编辑过的草稿写成正式数据。
+ *
+ * 请求体就是整份草稿（不是字段补丁）——编辑器的删行、改单位用整份覆盖表达最自然。
+ * 重复确认会覆盖上一次的结果。
+ */
+export async function confirmFile(
+  fileId: string,
+  content: ParsedContent,
+): Promise<ConfirmedFile> {
+  const response = await http.post<ConfirmedFile>(`/files/${fileId}/confirm`, content)
   return response.data
 }

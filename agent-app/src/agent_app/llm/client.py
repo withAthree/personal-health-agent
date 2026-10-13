@@ -138,11 +138,27 @@ def get_memory_llm() -> ChatOpenAI:
     return _build_utility_llm(settings.llm_memory_model or settings.llm_model)
 
 
-def _build_utility_llm(model: str) -> ChatOpenAI:
+@lru_cache(maxsize=1)
+def get_parse_llm() -> ChatOpenAI:
+    """返回**文档解析抽取**专用的 LLM 客户端单例。
+
+    与对话主流程解耦：``get_llm`` 是流式、高温、可带思考的对话客户端，而文档
+    解析只需要把 OCR 原文里的信息抄成结构化 JSON，两者选型标准不同（用户要求
+    这个模型将来可能单独更换），所以走独立配置 ``settings.llm_parse_model``。
+
+    温度 0.0：抽取任务不允许重新演绎，只要求忠于原文。
+    """
+    return _build_utility_llm(
+        settings.llm_parse_model or settings.llm_model,
+        temperature=0.0,
+    )
+
+
+def _build_utility_llm(model: str, *, temperature: float = 0.2) -> ChatOpenAI:
     """旁路任务客户端的共同构造。
 
-    旁路任务 = 上下文摘要 + 长期记忆抽取：都不与用户直接对话，都需要一次性
-    拿到完整结果（非流式），都不希望内容被重新演绎（低温）。
+    旁路任务 = 上下文摘要 + 长期记忆抽取 + 文档解析抽取：都不与用户直接对话，
+    都需要一次性拿到完整结果（非流式），都不希望内容被重新演绎（低温）。
 
     ``profile`` 不能省：压缩阈值用的是百分比口径（``llm/context.py`` 的
     ``SUMMARY_TRIGGER_FRACTION`` / ``SUMMARY_KEEP_FRACTION``），而
@@ -153,7 +169,7 @@ def _build_utility_llm(model: str) -> ChatOpenAI:
         model=model,
         api_key=SecretStr(settings.llm_api_key) if settings.llm_api_key else None,
         base_url=settings.llm_base_url,
-        temperature=0.2,
+        temperature=temperature,
         streaming=False,
         profile={"max_input_tokens": settings.llm_max_input_tokens},
     )
