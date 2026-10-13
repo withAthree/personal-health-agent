@@ -60,11 +60,35 @@ def _recognize(image: Image.Image) -> str:
     return text
 
 
-def recognize_image(path: Path) -> str:
-    """识别一张图片，返回文本；没有识别到文字时返回空串。
+def recognize_pil_image(image: Image.Image, *, source: str) -> str:
+    """识别一张已经在内存里的图片，返回文本。
+
+    与 :func:`recognize_image` 的区别只在输入形态：PDF 每页渲染出来就是一个
+    ``PIL.Image``，先落成临时文件再读回来没有意义。方向修正由调用方负责（图片
+    文件的角度在 EXIF 里，PDF 渲染结果本来就是正的）。
 
     **空文本不算失败**：截图里的空白区域本来就抽不出字，返回空串交给调用方决定
     （与整份失败区分开）。只有引擎本身出错才抛 :class:`OcrError`。
+    """
+    try:
+        started = time.perf_counter()
+        text = _recognize(image.convert("RGB"))
+        seconds = time.perf_counter() - started
+    except Exception as error:
+        raise OcrError(f"本地 OCR 失败：{error}") from error
+
+    logger.info(
+        "ocr.output",
+        path=source,
+        seconds=round(seconds, 2),
+        chars=len(text),
+        lines=len(text.splitlines()),
+    )
+    return text
+
+
+def recognize_image(path: Path) -> str:
+    """识别一张图片文件，返回文本；没有识别到文字时返回空串。
 
     读图走 Pillow 而不是让 ``rapidocr`` 自己 ``cv2.imread``：手机拍的照片方向信息
     在 EXIF 里，``cv2`` 不认，竖着拍会被侧着识别。
@@ -72,25 +96,15 @@ def recognize_image(path: Path) -> str:
     try:
         with Image.open(path) as image:
             fixed = ImageOps.exif_transpose(image)
-            pixels = f"{fixed.width}x{fixed.height}"
             logger.info(
                 "ocr.input",
                 path=str(path),
                 bytes=path.stat().st_size,
-                pixels=pixels,
+                pixels=f"{fixed.width}x{fixed.height}",
                 mode=fixed.mode,
             )
-            started = time.perf_counter()
-            text = _recognize(fixed.convert("RGB"))
-            seconds = time.perf_counter() - started
+            return recognize_pil_image(fixed, source=str(path))
+    except OcrError:
+        raise
     except Exception as error:
         raise OcrError(f"本地 OCR 失败：{error}") from error
-
-    logger.info(
-        "ocr.output",
-        path=str(path),
-        seconds=round(seconds, 2),
-        chars=len(text),
-        lines=len(text.splitlines()),
-    )
-    return text

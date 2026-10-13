@@ -22,6 +22,7 @@ from agent_app.core.database import async_session_maker
 from agent_app.llm.ocr import IMAGE_EXTENSIONS, recognize_image
 from agent_app.models.file import FileMetadata
 from agent_app.parsing.extract import extract_report
+from agent_app.parsing.pdf import PDF_EXTENSIONS, extract_pdf_text
 from agent_app.parsing.queue import dequeue
 
 logger = structlog.get_logger(__name__)
@@ -57,11 +58,13 @@ async def _parse_one(file_id: uuid.UUID) -> None:
         uploaded_at = row.created_at or datetime.now(UTC)
 
         try:
-            if row.extension not in IMAGE_EXTENSIONS:
+            source = settings.upload_dir / row.file_path
+            if row.extension in PDF_EXTENSIONS:
+                text = await run_in_threadpool(extract_pdf_text, source)
+            elif row.extension in IMAGE_EXTENSIONS:
+                text = await run_in_threadpool(recognize_image, source)
+            else:
                 raise UnsupportedFileError(f"暂不支持解析 .{row.extension} 文件")
-            text = await run_in_threadpool(
-                recognize_image, settings.upload_dir / row.file_path
-            )
             report = await extract_report(text, uploaded_at=uploaded_at)
         except Exception as error:
             message = str(error)[:_MAX_ERROR_CHARS] or error.__class__.__name__

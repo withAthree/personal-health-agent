@@ -23,6 +23,7 @@ dependencies = [
     "pydantic>=2.14.0",
     "pydantic-settings>=2.15.0",
     "pyjwt>=2.15.1",
+    "pypdfium2>=5.14.0",
     "python-dotenv>=1.2.4",
     "rapidocr>=3.10.0",
     "redis>=8.1.0",
@@ -108,6 +109,11 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
 strict_equality = true
+
+# pypdfium2 不带 py.typed，本仓库只拿它渲染页面，接口很窄，不值得为它写本地 stub。
+[[tool.mypy.overrides]]
+module = "pypdfium2.*"
+ignore_missing_imports = true
 
 # ==================== Pytest ====================
 [tool.pytest.ini_options]
