@@ -42,6 +42,10 @@ interface UploadItem {
   createdAt?: string
   error?: string
   content?: ParsedContent
+  /** 原始文件。命中重复上传时要靠它强制重传，所以留着。 */
+  file?: File
+  /** 命中的是重复上传时，已上传那条的 file_id。 */
+  duplicateOf?: string
 }
 
 /** 列表右侧的状态文案。 */
@@ -164,6 +168,17 @@ function canExpand(item: UploadItem): boolean {
   )
 }
 
+/** 从 409 `duplicate_file` 的 `detail` 里取出已上传那条的 id。 */
+function duplicateFileId(detail: unknown): string | undefined {
+  if (typeof detail === 'object' && detail !== null) {
+    const { file_id: fileId } = detail as { file_id?: unknown }
+    if (typeof fileId === 'string') {
+      return fileId
+    }
+  }
+  return undefined
+}
+
 /** 个人档案页：上传区 + 每个文件独立的状态 + 解析草稿确认。 */
 export function ProfilePage() {
   const [items, setItems] = useState<UploadItem[]>([])
@@ -277,32 +292,57 @@ export function ProfilePage() {
     }
   }, [pendingKey])
 
-  const startUpload = useCallback(async (key: string, file: File) => {
-    try {
-      const uploaded = await uploadFile(file)
+  const startUpload = useCallback(
+    async (key: string, file: File, options: { force?: boolean } = {}) => {
       setItems((prev) =>
         prev.map((item) =>
           item.key === key
             ? {
                 ...item,
-                fileId: uploaded.id,
-                status: uploaded.status as FileStatus,
-                // 先用本地时间顶上，轮询拿到服务端 created_at 后会覆盖
-                createdAt: new Date().toISOString(),
+                file,
+                status: 'uploading',
+                error: undefined,
+                duplicateOf: undefined,
               }
             : item,
         ),
       )
-    } catch (error) {
-      setItems((prev) =>
-        prev.map((item) =>
-          item.key === key
-            ? { ...item, status: 'failed', error: toApiError(error).message }
-            : item,
-        ),
-      )
-    }
-  }, [])
+      try {
+        const uploaded = await uploadFile(file, options)
+        setItems((prev) =>
+          prev.map((item) =>
+            item.key === key
+              ? {
+                  ...item,
+                  fileId: uploaded.id,
+                  status: uploaded.status as FileStatus,
+                  // 先用本地时间顶上，轮询拿到服务端 created_at 后会覆盖
+                  createdAt: new Date().toISOString(),
+                }
+              : item,
+          ),
+        )
+      } catch (error) {
+        const apiError = toApiError(error)
+        setItems((prev) =>
+          prev.map((item) =>
+            item.key === key
+              ? {
+                  ...item,
+                  status: 'failed',
+                  error: apiError.message,
+                  duplicateOf:
+                    apiError.code === 'duplicate_file'
+                      ? duplicateFileId(apiError.detail)
+                      : undefined,
+                }
+              : item,
+          ),
+        )
+      }
+    },
+    [],
+  )
 
   const handleFiles = useCallback(
     (files: File[]) => {
@@ -379,6 +419,33 @@ export function ProfilePage() {
     )
   }
 
+  /**
+   * 重复文件的行下面挂一条提示。
+   *
+   * 不自动覆盖也不自动丢弃：同一份截图很可能就是用户手滑传了两次，但「今天重拍了同一天
+   * 的数据再传」也确实需要重新解析。所以只把选择摊开，让用户点一下。
+   */
+  const renderDuplicate = (item: UploadItem) => {
+    const { file, duplicateOf } = item
+    if (file === undefined || duplicateOf === undefined) {
+      return null
+    }
+    return (
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-dashed bg-muted/30 px-3 py-2">
+        <span className="min-w-0 text-xs text-muted-foreground">
+          这份文件之前已经上传过，重新解析会再跑一遍 OCR（同一天的同一指标仍会被覆盖）。
+        </span>
+        <button
+          type="button"
+          className="ml-auto shrink-0 rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+          onClick={() => void startUpload(item.key, file, { force: true })}
+        >
+          重新解析
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full flex-col gap-6 p-6">
       <div className="flex flex-col gap-1">
@@ -416,6 +483,7 @@ export function ProfilePage() {
                   }}
                 />
                 {renderEditor(item)}
+                {renderDuplicate(item)}
               </li>
             ))}
           </ul>

@@ -15,14 +15,16 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import uuid
-from datetime import UTC, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, BinaryIO
 
 import structlog
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -53,8 +55,11 @@ _PART_SUFFIX = ".part"
 #: 打日志时异常信息的截断长度，避免把 traceback 全文塞进日志。
 _MAX_ERROR_CHARS = 300
 
-#: 允许确认入库的状态。``confirmed`` 也在内：用户可以改完草稿再确认一次。
-_CONFIRMABLE_STATUSES = frozenset({"parsed", "confirmed"})
+#: 允许确认入库的状态。确认之后就锁死——想修正只能重新上传一份。
+_CONFIRMABLE_STATUS = "parsed"
+
+#: 日期粒度一律按北京时间切天。用户都在国内，不切时区反而会让半夜上传落到前一天。
+_CST = timezone(timedelta(hours=8))
 
 
 def _invalid_file(code: str, message: str) -> HTTPException:
@@ -95,21 +100,60 @@ def _write_chunk(handle: BinaryIO, chunk: bytes) -> None:
     handle.write(chunk)
 
 
-async def _stream_to_disk(upload: UploadFile, target: Path, *, limit: int) -> int:
-    """把上传内容逐块写进 ``target``，返回写入的字节数。
+async def _stream_to_disk(
+    upload: UploadFile, target: Path, *, limit: int
+) -> tuple[int, str]:
+    """把上传内容逐块写进 ``target``，返回 ``(字节数, sha256 十六进制)``。
 
     超过 ``limit`` 时抛 400 ``file_too_large``；此时 ``target`` 已写了部分内容，由调用
-    方负责删除。
+    方负责删除。哈希跟着写盘一起算，省得为了查重再读一遍磁盘。
     """
     size = 0
+    digest = hashlib.sha256()
     with target.open("wb") as handle:
         while (chunk := await upload.read(_CHUNK_SIZE)) != b"":
             size += len(chunk)
             if size > limit:
                 limit_mb = limit / (1024 * 1024)
                 raise _invalid_file("file_too_large", f"文件超过 {limit_mb:g}MB 上限")
+            digest.update(chunk)
             await run_in_threadpool(_write_chunk, handle, chunk)
-    return size
+    return size, digest.hexdigest()
+
+
+def _duplicate_file(existing: FileMetadata) -> HTTPException:
+    """409 响应：这个文件已经传过了。
+
+    ``detail`` 里带上已有文件的 id 与上传日期，前端可以直接给出「去看那一份」的入口。
+    """
+    uploaded_on = existing.created_at.astimezone(_CST).strftime("%Y-%m-%d")
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "message": f"这个文件已经在 {uploaded_on} 上传过",
+            "code": "duplicate_file",
+            "file_id": str(existing.id),
+        },
+    )
+
+
+async def _find_duplicate(
+    db: AsyncSession, *, user_id: uuid.UUID, content_hash: str
+) -> FileMetadata | None:
+    """找同一用户已经传过的相同文件。
+
+    解析失败的不算：重传一个上次没解析成功的文件是正常操作，不该被拦下。
+    """
+    return await db.scalar(
+        select(FileMetadata)
+        .where(
+            FileMetadata.user_id == user_id,
+            FileMetadata.content_hash == content_hash,
+            FileMetadata.status != "failed",
+        )
+        .order_by(FileMetadata.created_at.desc())
+        .limit(1)
+    )
 
 
 async def _require_file(
@@ -140,16 +184,18 @@ def _to_detail(row: FileMetadata) -> FileDetailOut:
     )
 
 
-def _resolve_measured_at(date: str | None, *, fallback: datetime) -> datetime:
-    """把草稿里的 ``YYYY-MM-DD`` 变成带时区的时间戳。
+def _resolve_measured_date(value: str | None, *, fallback: datetime) -> date:
+    """把草稿里的 ``YYYY-MM-DD`` 变成日期（北京时间，粒度到天）。
 
     日期是模型看原文抄的、已由 ``parsing/dates.py`` 归一化过，仍可能为 ``None``；
-    需求要求「解析不出时间就按上传时间存」，``fallback`` 就是上传时间。
+    需求要求「解析不出时间就按上传时间存」。``fallback`` 是上传时间戳，先换算到北京
+    时间再取日期——凌晨上传时按 UTC 取会落到前一天。
     """
-    if date:
+    if value:
         with contextlib.suppress(ValueError):
-            return datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=UTC)
-    return fallback
+            # 只取日期部分。补时区是为了说明这个日期指的是北京时间的一天，不是 UTC 的。
+            return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=_CST).date()
+    return fallback.astimezone(_CST).date()
 
 
 @router.post("/upload", response_model=UploadedFileOut)
@@ -157,6 +203,9 @@ async def upload_file(
     auth: Annotated[AuthContext, Depends(get_auth_context)],
     db: Annotated[AsyncSession, Depends(get_db)],
     file: Annotated[UploadFile, File(description="待上传的文件")],
+    force: Annotated[
+        bool, Query(description="内容与已上传文件相同时仍要重新解析")
+    ] = False,
 ) -> UploadedFileOut:
     """校验、落盘、登记并排队解析，立即返回文件 id。
 
@@ -186,9 +235,17 @@ async def upload_file(
     final_path = directory / f"{file_id.hex}.{extension}"
 
     try:
-        size = await _stream_to_disk(file, part_path, limit=settings.upload_max_bytes)
+        size, content_hash = await _stream_to_disk(
+            file, part_path, limit=settings.upload_max_bytes
+        )
         if size == 0:
             raise _invalid_file("empty_file", "文件内容为空")
+        if not force:
+            duplicate = await _find_duplicate(
+                db, user_id=auth.user.id, content_hash=content_hash
+            )
+            if duplicate is not None:
+                raise _duplicate_file(duplicate)
         # 校验都过了才换成正式名：目录里出现的 ``.part`` 一定是没写完的垃圾。
         await run_in_threadpool(part_path.replace, final_path)
     except BaseException:
@@ -206,6 +263,7 @@ async def upload_file(
         file_size=size,
         mime_type=file.content_type or "application/octet-stream",
         extension=extension,
+        content_hash=content_hash,
     )
     try:
         db.add(row)
@@ -276,32 +334,40 @@ async def confirm_file(
     的补丁合并：编辑器里的删除行、改单位，用整份覆盖表达最自然，也不会出现「哪几个
     字段被改过」的歧义。
 
-    重复确认会**覆盖**上一次的结果（先删旧的 ``health_records`` 再建新的），而不是
-    追加一条：同一个文件被确认两次，用户想要的是「改好了」，不是「存了两份」。
+    指标按 ``(user_id, measured_date, zh_name)`` **upsert**：同一个指标的同一天只会
+    有一行，后来者覆盖先前的。于是「中午传了步数 3000、晚上传了 8000」留下 8000，
+    「把今天的数据重新截图明天又传一遍」也不会多出一行——判断覆盖还是新增完全由主
+    键决定，不需要用户选。
+
+    一个文件只能确认一次：``status`` 必须还是 ``parsed``。要修正只能重新上传。
     """
     row = await _require_file(db, file_id, user_id=auth.user.id)
-    if row.status not in _CONFIRMABLE_STATUSES:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"message": "文件尚未解析完成", "code": "file_not_parsed"},
+    if row.status != _CONFIRMABLE_STATUS:
+        detail = (
+            {"message": "文件已确认入库，不能再修改", "code": "file_already_confirmed"}
+            if row.status == "confirmed"
+            else {"message": "文件尚未解析完成", "code": "file_not_parsed"}
         )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
-    previous = await db.scalar(
-        select(HealthRecord).where(HealthRecord.file_id == row.id)
-    )
-    if previous is not None:
-        await db.delete(previous)
-        await db.flush()
-
+    measured_date = _resolve_measured_date(payload.date, fallback=row.created_at)
     record = HealthRecord(
         user_id=auth.user.id,
         file_id=row.id,
-        measured_at=_resolve_measured_at(payload.date, fallback=row.created_at),
+        measured_date=measured_date,
         date_raw=payload.date_raw,
         findings=list(payload.other_info_list),
     )
-    record.metrics = [
-        HealthMetric(
+    db.add(record)
+
+    for index, item in enumerate(payload.data_list):
+        # 手写 ``insert`` 而不是建 ORM 对象：冲突时要落到 ``ON CONFLICT DO UPDATE``，
+        # 由数据库决定「这行是新增还是改值」，应用侧不必先查一次再决定。
+        statement = insert(HealthMetric).values(
+            id=uuid.uuid4(),
+            user_id=auth.user.id,
+            measured_date=measured_date,
+            source_file_id=row.id,
             en_name=item.en_name,
             zh_name=item.zh_name,
             value=item.value,
@@ -309,9 +375,21 @@ async def confirm_file(
             reference_range=item.reference_range,
             position=index,
         )
-        for index, item in enumerate(payload.data_list)
-    ]
-    db.add(record)
+        await db.execute(
+            statement.on_conflict_do_update(
+                constraint="uq_health_metrics_series",
+                set_={
+                    "source_file_id": row.id,
+                    "en_name": item.en_name,
+                    "value": item.value,
+                    "unit": item.unit,
+                    "reference_range": item.reference_range,
+                    "position": index,
+                    "updated_at": func.now(),
+                },
+            )
+        )
+
     # 草稿也换成确认后的那份：页面刷新回来看到的应该是用户认可的内容。
     row.parsed_content = payload.model_dump(by_alias=True)
     row.status = "confirmed"

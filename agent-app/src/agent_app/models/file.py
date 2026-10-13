@@ -41,6 +41,9 @@ class FileMetadata(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     file_size: Mapped[int] = mapped_column(BigInteger)
     mime_type: Mapped[str] = mapped_column(String(128))
     extension: Mapped[str] = mapped_column(String(32))
+    #: 文件内容的 sha256（小写十六进制）。用于识别重复上传：同一用户再传一次同一个
+    #: 文件时直接拦下，省掉一次几十秒的解析。存量行可能为 NULL。
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'pending'")
     )

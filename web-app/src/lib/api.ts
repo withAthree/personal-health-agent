@@ -360,14 +360,23 @@ export interface UploadedFile {
  *
  * 后端会把文件落到服务器磁盘并返回它的 id；解析 / 清洗 / 入库是后续阶段。失败时抛出
  * 带 `code` 的 `ApiError`（如 `unsupported_file_type` / `file_too_large`）。
+ *
+ * 同一个文件已经传过时后端返回 409 `duplicate_file`，`detail` 里带已上传那条的
+ * `file_id`；传 `force` 可以跳过这个检查重新解析。
  */
-export async function uploadFile(file: File): Promise<UploadedFile> {
+export async function uploadFile(
+  file: File,
+  options: { force?: boolean } = {},
+): Promise<UploadedFile> {
   const form = new FormData()
   form.append('file', file)
   // 不显式设 Content-Type：axios 实例没有默认值，遇到 FormData 会原样交给浏览器，
   // 由浏览器补上带 boundary 的 multipart/form-data。
-  // 超时放宽到 60s：默认 15s 对 5MB 上传偏紧。
-  const response = await http.post<UploadedFile>('/upload', form, { timeout: 60_000 })
+  // 超时放宽到 60s：默认 15s 对 20MB 上传偏紧。
+  const response = await http.post<UploadedFile>('/upload', form, {
+    timeout: 60_000,
+    params: options.force === true ? { force: true } : undefined,
+  })
   return response.data
 }
 
@@ -434,7 +443,8 @@ export interface ConfirmedFile {
  * 确认入库：把用户编辑过的草稿写成正式数据。
  *
  * 请求体就是整份草稿（不是字段补丁）——编辑器的删行、改单位用整份覆盖表达最自然。
- * 重复确认会覆盖上一次的结果。
+ * 指标按「指标名 + 日期」合并进正式表：同一天的同一个指标只会有一行，后传的覆盖
+ * 先前的。一个文件只能确认一次，再确认会返回 409 `file_already_confirmed`。
  */
 export async function confirmFile(
   fileId: string,

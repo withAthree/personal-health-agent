@@ -15,12 +15,20 @@ import { clearAuth, getToken } from '@/lib/auth'
 export class ApiError extends Error {
   readonly status: number
   readonly code: string | null
+  /**
+   * 后端 `detail` 的原始内容。
+   *
+   * 结构化错误（如 409 `duplicate_file` 带的 `file_id`）需要读它；只想要文案的调用方
+   * 仍然只看 `message` 就够了。
+   */
+  readonly detail: unknown
 
-  constructor(status: number, message: string, code: string | null) {
+  constructor(status: number, message: string, code: string | null, detail?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
+    this.detail = detail
   }
 }
 
@@ -109,6 +117,7 @@ function buildApiError(status: number, payload: unknown): ApiError {
     status,
     detailToMessage(detail) ?? `请求失败（HTTP ${String(status)}）`,
     detailToCode(detail),
+    detail,
   )
 }
 
