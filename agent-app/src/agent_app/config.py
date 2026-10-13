@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     upload_dir: Path = BASE_DIR / "uploads"
 
     #: 文件上传：单文件大小上限（字节）。超过直接拒绝，不落盘。
-    upload_max_bytes: int = 5 * 1024 * 1024
+    upload_max_bytes: int = 20 * 1024 * 1024
 
     #: 文件上传：允许的扩展名（小写、不含点），逗号分隔。
     #: 刻意用字符串而不是集合：pydantic-settings 对复杂类型默认按 JSON 解析，

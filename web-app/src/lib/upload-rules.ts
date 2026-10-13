@@ -25,7 +25,7 @@ export const ACCEPTED_EXTENSIONS: readonly string[] = [
 ]
 
 /** 单个文件大小上限，与后端 `upload_max_bytes` 一致。 */
-export const MAX_FILE_BYTES = 5 * 1024 * 1024
+export const MAX_FILE_BYTES = 20 * 1024 * 1024
 
 /** 图片类扩展名，只用来决定列表里显示哪个图标。 */
 const IMAGE_EXTENSIONS: readonly string[] = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic']
