@@ -89,9 +89,13 @@ class Settings(BaseSettings):
     summary_keep_messages: int = 21
     summary_keep_fraction: float = 0.1
 
+    #: 文件上传：落盘根目录。上传的文件按 ``{user_id}/{file_id}.{ext}`` 存放，
+    #: 原始文件名不参与路径拼接（防路径穿越），只作为展示用的元信息返回。
+    #: 容器里 ``BASE_DIR`` 是 ``/app``，所以是 ``/app/uploads``，由
+    #: ``docker/docker-compose.yml`` 挂到宿主机，否则容器重建即丢。
+    upload_dir: Path = BASE_DIR / "uploads"
+
     #: 文件上传：单文件大小上限（字节）。超过直接拒绝，不落盘。
-    #: 当前阶段上传只是占位（校验完即丢弃），这个上限仍要生效，否则等于开放
-    #: 一个无限制的接收端。
     upload_max_bytes: int = 5 * 1024 * 1024
 
     #: 文件上传：允许的扩展名（小写、不含点），逗号分隔。

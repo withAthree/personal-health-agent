@@ -66,6 +66,9 @@ services:
       # 绝不能挂整个 ../agent-app，否则宿主机的 Windows .venv 会覆盖容器内
       # 的 Linux 虚拟环境，依赖全套失效。
       - ../agent-app/src:/app/src
+      # 上传的文件按 {user_id}/{file_id}.{ext} 落在 upload_dir（容器内 /app/uploads）。
+      # 不挂到宿主机的话，容器一重建上传的文件就全没了。
+      - ../agent-app/uploads:/app/uploads
     depends_on:
       db:
         condition: service_healthy
