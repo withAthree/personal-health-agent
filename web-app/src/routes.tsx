@@ -7,6 +7,7 @@ import { ChatSessionProvider } from '@/contexts/chat-session-context'
 import { ChatPage } from '@/pages/ChatPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { LoginPage } from '@/pages/LoginPage'
+import { ProfilePage } from '@/pages/ProfilePage'
 
 /** 路由表；由 `src/main.tsx` 交给 `createBrowserRouter`。 */
 export const routes: RouteObject[] = [
@@ -32,6 +33,7 @@ export const routes: RouteObject[] = [
       { index: true, element: <Navigate to="/chat" replace /> },
       { path: 'chat', element: <ChatPage /> },
       { path: 'dashboard', element: <DashboardPage /> },
+      { path: 'profile', element: <ProfilePage /> },
       // 未知路径回到对话页
       { path: '*', element: <Navigate to="/chat" replace /> },
     ],

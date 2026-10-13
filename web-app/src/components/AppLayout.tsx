@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import {
   Ellipsis,
+  FolderOpen,
   HeartPulse,
   LayoutDashboard,
   Loader2,
@@ -141,25 +142,36 @@ export function AppLayout() {
           <span className="truncate text-sm font-semibold tracking-tight" title={appTitle}>
             PHA
           </span>
-          <NavLink
-            to="/dashboard"
-            className="ml-auto"
-            aria-label="健康看板"
-            title="健康看板"
-          >
-            {({ isActive }) => (
-              <span
-                className={cn(
-                  'grid size-8 place-items-center rounded-lg transition-colors',
-                  isActive
-                    ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                    : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-                )}
-              >
-                <LayoutDashboard className="size-4" aria-hidden="true" />
-              </span>
-            )}
-          </NavLink>
+          <div className="ml-auto flex items-center gap-1">
+            <NavLink to="/profile" aria-label="个人档案" title="个人档案">
+              {({ isActive }) => (
+                <span
+                  className={cn(
+                    'grid size-8 place-items-center rounded-lg transition-colors',
+                    isActive
+                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                      : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                  )}
+                >
+                  <FolderOpen className="size-4" aria-hidden="true" />
+                </span>
+              )}
+            </NavLink>
+            <NavLink to="/dashboard" aria-label="健康看板" title="健康看板">
+              {({ isActive }) => (
+                <span
+                  className={cn(
+                    'grid size-8 place-items-center rounded-lg transition-colors',
+                    isActive
+                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                      : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                  )}
+                >
+                  <LayoutDashboard className="size-4" aria-hidden="true" />
+                </span>
+              )}
+            </NavLink>
+          </div>
         </div>
 
         {/* 对话记录列表 */}

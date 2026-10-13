@@ -40,6 +40,7 @@ import {
   type StreamState,
   type StreamStatus,
 } from '@/lib/api'
+import { fileExtension, formatFileSize } from '@/lib/file'
 import { clearLastSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
 
@@ -138,23 +139,6 @@ function elapsedSince(startedAt: number | null): number | null {
 
 const isAbortError = (error: unknown): boolean =>
   error instanceof Error && error.name === 'AbortError'
-
-/** 把字节数格式化成参考图那样的大小文案（1.24KB / 2.00MB / 512B）。 */
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) {
-    return `${String(bytes)}B`
-  }
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(2)}KB`
-  }
-  return `${(bytes / (1024 * 1024)).toFixed(2)}MB`
-}
-
-/** 取扩展名并大写（`report.md` → `MD`）；没有扩展名时返回空串。 */
-function fileExtension(name: string): string {
-  const dot = name.lastIndexOf('.')
-  return dot === -1 ? '' : name.slice(dot + 1).toUpperCase()
-}
 
 const composerSchema = z.object({
   message: z.string().trim().min(1, '请输入内容'),
