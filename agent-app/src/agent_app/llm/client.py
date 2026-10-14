@@ -1,6 +1,6 @@
 """LLM 客户端（硅基流动，OpenAI 兼容接口）。"""
 
-from functools import lru_cache
+from functools import cache, lru_cache
 from typing import Any
 
 from langchain_core.messages import AIMessageChunk
@@ -101,15 +101,26 @@ class ChatOpenAIWithReasoning(ChatOpenAI):
         return converted
 
 
-@lru_cache(maxsize=1)
-def get_llm() -> ChatOpenAI:
-    """返回对话用的 LLM 客户端单例。
+@cache
+def get_dialog_llm(model: str) -> ChatOpenAI:
+    """返回**按模型名缓存**的对话客户端。
+
+    与 ``get_llm`` 只有一点不同：模型名是参数。参数化是为了多 Agent——三个业务
+    Agent 各自选型后互不影响（角色 → 模型名的映射在 ``orchestration/llm.py``）。
+    ``lru_cache`` 是**进程级**单例，所以换模型要重启进程（操作见
+    ``document/模型使用清单.md``）。
 
     是否输出思考过程由 ``settings.llm_enable_thinking`` 决定，关闭时请求体与
     改动前完全一致（不传 ``extra_body``）。
+
+    Args:
+        model: 模型名。**本函数不做回落**，由调用方决定回落目标。
+
+    Returns:
+        该模型名对应的对话客户端（同一模型名恒返回同一个实例）。
     """
     return ChatOpenAIWithReasoning(
-        model=settings.llm_model,
+        model=model,
         api_key=SecretStr(settings.llm_api_key) if settings.llm_api_key else None,
         base_url=settings.llm_base_url,
         temperature=0.7,
@@ -119,13 +130,24 @@ def get_llm() -> ChatOpenAI:
 
 
 @lru_cache(maxsize=1)
+def get_llm() -> ChatOpenAI:
+    """返回单 Agent 时代那个对话客户端的单例（模型名＝``settings.llm_model``）。
+
+    多 Agent 上线后业务 Agent 走 ``orchestration/llm.py`` 的 ``get_agent_llm``；
+    这个函数保留给还未改造的调用点，与 ``get_dialog_llm`` **共用同一份缓存**，
+    所以同一个模型名不会构造出两个客户端。
+    """
+    return get_dialog_llm(settings.llm_model)
+
+
+@lru_cache(maxsize=1)
 def get_summary_llm() -> ChatOpenAI:
     """返回**上下文摘要**专用的 LLM 客户端单例。
 
     摘要是这个项目里唯一在用户等待路径上的旁路调用（``_stream_chat`` 要在
     回复后触发压缩），所以它单独一个配置项 ``settings.llm_summary_model``。
     """
-    return _build_utility_llm(settings.llm_summary_model or settings.llm_model)
+    return get_utility_llm(settings.llm_summary_model or settings.llm_model)
 
 
 @lru_cache(maxsize=1)
@@ -135,7 +157,7 @@ def get_memory_llm() -> ChatOpenAI:
     抽取在后台任务里跑（``memory/extract.py``），对延迟不敏感，但对结构化输出
     的可靠性敏感，因此与摘要分开选型：``settings.llm_memory_model``。
     """
-    return _build_utility_llm(settings.llm_memory_model or settings.llm_model)
+    return get_utility_llm(settings.llm_memory_model or settings.llm_model)
 
 
 @lru_cache(maxsize=1)
@@ -173,3 +195,22 @@ def _build_utility_llm(model: str, *, temperature: float = 0.2) -> ChatOpenAI:
         streaming=False,
         profile={"max_input_tokens": settings.llm_max_input_tokens},
     )
+
+
+@cache
+def get_utility_llm(model: str, *, temperature: float = 0.2) -> ChatOpenAI:
+    """返回**按模型名缓存**的旁路客户端（非流式、低温）。
+
+    多 Agent 的控制节点（编排 / 整合 / 反思 / 收尾）用它：不与用户直接对话、要
+    一次拿到完整结果、要能 ``with_structured_output``。与 ``get_dialog_llm`` 的
+    缓存口径相同（**进程级**单例，换模型要重启进程）。
+
+    Args:
+        model: 模型名。**本函数不做回落**，由调用方决定回落目标。
+        temperature: 采样温度。缓存键包含它，所以同一模型的不同温度会各建一个
+            实例；默认沿用旁路任务共同的 0.2，只有在调用方明确要求时才改。
+
+    Returns:
+        该模型名对应的旁路客户端（同一模型名 + 同一温度恒返回同一个实例）。
+    """
+    return _build_utility_llm(model, temperature=temperature)

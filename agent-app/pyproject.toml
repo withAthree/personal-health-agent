@@ -88,6 +88,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "ANN201"]
+# 开发脚本的输出就是它存在的理由，禁止 print 只会逼出更差的写法。
+"scripts/**/*.py" = ["T201"]
 
 [tool.ruff.lint.isort]
 # 仓库根有同名目录 alembic/，不显式声明时 ruff 会把 alembic 包误判为一方库。

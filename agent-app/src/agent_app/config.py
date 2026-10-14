@@ -57,6 +57,24 @@ class Settings(BaseSettings):
     #: ``llm_model``）。
     llm_parse_model: str = "deepseek-ai/DeepSeek-V3.2"
 
+    #: 多 Agent 编排：三个业务 Agent（数据科学 DS / 领域专家 DE / 健康教练 HC）
+    #: 各自的对话模型。三者分开是为了**解耦**——换掉其中一个角色的模型不影响其他
+    #: 角色，也不用改任何业务代码（节点只按角色名取客户端，见
+    #: ``orchestration/llm.py``）。三个都**留空表示回落到 ``llm_model``**（与
+    #: ``llm_summary_model`` 同一回落模式），所以默认不配时行为与单 Agent 完全一致。
+    #: 开发期直接改这里即可（理由见 ``llm_model``）；各调用点的要求与验收标准见
+    #: ``document/模型使用清单.md``。
+    llm_ds_model: str = ""
+    llm_de_model: str = ""
+    llm_hc_model: str = ""
+
+    #: 多 Agent 编排：控制节点（编排决策 / 结果整合 / 反思 / 收尾）用的模型。
+    #: 这三个节点**不与用户直接对话**，只要求稳定地吐出符合 schema 的结构化输出，
+    #: 所以共用一个配置项，并走低温非流式客户端（``orchestration/llm.py`` 的
+    #: ``get_orchestrator_llm``、``llm/client.py`` 的 ``get_utility_llm``）。
+    #: **留空表示回落到 ``llm_model``**。开发期直接改这里。
+    llm_orchestrator_model: str = ""
+
     #: 是否让对话模型输出思考过程（reasoning）。
     #: **默认关闭**：实测 ``deepseek-ai/DeepSeek-V3.2`` 开启后输出 token 约为关闭时的
     #: 30 倍，首个正文分片从约 3 秒推迟到约 14 秒（见
