@@ -1,8 +1,9 @@
 """图编排的节点实现。
 
-**当前进度**：``intake`` / ``orchestrator`` 已实现（单位 2，编排决策）；``finalize``
-已实现两种形态（转发 ``draft`` / 现生成正文），``reflect`` 只实现了「没有产出可评时
-直接判够」的短路（流程调整），三条判据待单位 7；三个子 Agent 与 ``integrate`` /
+**当前进度**：``intake`` / ``orchestrator`` 已实现（单位 2，编排决策）；``data_science``
+已实现（单位 4：健康数据工具 + 小工具循环）；``finalize`` 已实现两种形态（转发
+``draft`` / 现生成正文），``reflect`` 只实现了「没有产出可评时直接判够」的短路
+（流程调整），三条判据待单位 7；``domain_expert`` / ``health_coach`` / ``integrate`` /
 ``memory`` 仍是空操作。
 
 实现某个节点时**只改它自己的函数体**，不要动 ``graph.py`` 里的连线；唯一例外是
@@ -14,12 +15,22 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 import structlog
-from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import (
+    AIMessageChunk,
+    AnyMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolCall,
+    ToolMessage,
+)
+from langchain_core.tools import BaseTool
 from langgraph.runtime import get_runtime
 from sqlalchemy import select
 
@@ -29,18 +40,28 @@ from agent_app.memory.render import render_memories
 from agent_app.memory.store import fetch_memories
 from agent_app.models.file import FileMetadata
 from agent_app.orchestration import blocks
-from agent_app.orchestration.llm import get_general_llm, get_orchestrator_llm
+from agent_app.orchestration.llm import (
+    get_agent_llm,
+    get_general_llm,
+    get_orchestrator_llm,
+)
 from agent_app.orchestration.prompts import (
+    AGENT_PRIMARY_HINT,
+    AGENT_SUPPORT_HINT,
+    DS_PROMPT,
     EMPTY_PLACEHOLDER,
+    GAP_CONTEXT,
     GENERAL_PROMPT,
     ORCHESTRATOR_PROMPT,
     RETRY_CONTEXT,
 )
 from agent_app.orchestration.state import (
     AgentCode,
+    Contribution,
     OrchestrationState,
     RoutingDecision,
 )
+from agent_app.tools.health import build_health_tools
 
 logger = structlog.get_logger(__name__)
 
@@ -70,6 +91,16 @@ _FILE_STATUS_LABELS: dict[str, str] = {
     "failed": "解析失败",
     "confirmed": "已确认",
 }
+
+#: 子 Agent 一次运行里最多几轮「请求模型 → 执行工具」。上限是兜底：模型偶尔会盯着
+#: 同一份数据反复取，不夹住就是死循环。
+_MAX_TOOL_ROUNDS = 6
+
+#: 引用其他 Agent 的材料时，单份材料进提示词的字符上限。
+_MATERIAL_CHARS = 1500
+
+#: ``Contribution.role`` 的中文标注，只用于在提示词里说明「这份材料是谁交的」。
+_ROLE_LABELS: dict[str, str] = {"primary": "主", "support": "支持"}
 
 
 # =====================================================================
@@ -339,18 +370,257 @@ async def orchestrator(state: OrchestrationState) -> dict[str, Any]:
 # =====================================================================
 
 
-def data_science(state: OrchestrationState) -> dict[str, Any]:
-    """数据科学 Agent：多模态健康数据分析、统计计算。
+def _last_user_text(state: OrchestrationState) -> str:
+    """state 里最后一条用户消息；没有就返回空串。"""
+    for message in reversed(state.get("messages") or []):
+        if isinstance(message, HumanMessage):
+            return _message_text(message)
+    return ""
 
-    落地时要做的：
 
-    * 用 ``state["queries"]`` 里重写后的查询去查个人健康数据
-      （``health_metrics`` / ``health_records``，**没有读接口，要新写工具**）；
-    * 产出追加进 ``contributions``（返回 ``{"contributions": [...]}``）；
-    * 第一版**不做 Docker 沙箱、不出图表**（用户已定：先把流程跑通），
-      只做「查库 + 基于查询结果分析」。
+def _render_gaps(state: OrchestrationState) -> str:
+    """回环重入时补上「上一轮取过什么、还缺什么」；首轮返回空串。"""
+    tried = state.get("tried_queries") or []
+    gaps = state.get("gaps") or []
+    if not tried and not gaps:
+        return ""
+    return GAP_CONTEXT.format(
+        tried="\n".join(f"- {query}" for query in tried) or EMPTY_PLACEHOLDER,
+        gaps="\n".join(f"- {gap}" for gap in gaps) or EMPTY_PLACEHOLDER,
+    )
+
+
+def _render_material(state: OrchestrationState, agent: AgentCode) -> str:
+    """拼子 Agent 的「用户原话 + 其他 Agent 已交回的材料 + 上一轮缺口」。
+
+    支持 Agent 先跑、主 Agent 后跑（见 ``graph.route_from_orchestrator``），所以主
+    Agent 一定读得到支持者的产物。**这就是「局部通信」的实际形态**：通过共享 state
+    传递，不是 Agent 之间互相调用。
     """
-    return {}
+    sections: list[str] = []
+    if question := _last_user_text(state):
+        sections.append(f"## 用户这句话的原话\n{question}")
+    others = [item for item in state.get("contributions") or [] if item.agent != agent]
+    if others:
+        rendered: list[str] = []
+        for item in others:
+            label = _ROLE_LABELS.get(item.role, item.role)
+            lines = [
+                f"### 来自 {item.agent}（第 {item.step + 1} 轮，{label} Agent）",
+                item.content[:_MATERIAL_CHARS],
+            ]
+            if item.sources:
+                lines.append(f"（依据：{'、'.join(item.sources)}）")
+            rendered.append("\n".join(lines))
+        sections.append("## 其他 Agent 已经交回的材料\n" + "\n\n".join(rendered))
+    if retry := _render_gaps(state):
+        sections.append(retry)
+    return "\n\n".join(sections) or EMPTY_PLACEHOLDER
+
+
+def _agent_tools(
+    agent: AgentCode, user_id: uuid.UUID | None
+) -> tuple[list[BaseTool], list[str]]:
+    """给子 Agent 配工具，同时给出「来源记录器」。
+
+    目前只有 ds 有工具——它要的用户数据只能通过工具取。``de`` 要等联网检索（单位 6），
+    ``hc`` 暂时不需要外部数据。``user_id`` 为空（非图执行环境）时不给工具：数据工具
+    必须按用户过滤，没有身份就没有数据源。
+    """
+    if agent == "ds" and user_id is not None:
+        used: list[str] = []
+        return build_health_tools(user_id, used), used
+    return [], []
+
+
+def _role_hint(role: Literal["primary", "support"], state: OrchestrationState) -> str:
+    """主 / 支持两种身份对应的提示词段落。"""
+    if role == "primary":
+        return AGENT_PRIMARY_HINT
+    return AGENT_SUPPORT_HINT.format(primary=state.get("primary") or "其他 Agent")
+
+
+def _render_call(name: str, args: dict[str, Any]) -> str:
+    """把一次工具调用渲染成一行文本（给用户看的过程块）。"""
+    return f"{name}({json.dumps(args, ensure_ascii=False, default=str)})"
+
+
+async def _turn(
+    llm: BaseChatModel, tools: list[BaseTool], messages: list[AnyMessage]
+) -> AIMessageChunk:
+    """跑一次模型请求，把分片拼回一条完整消息（正文或 ``tool_calls``）。
+
+    **这里不发 thinking 块**：推理内容随框架的 ``messages`` 流出去，由 ``chat.py``
+    按节点归属统一发（``graph.NODE_AGENT_SOURCE``），这里再发一份就重了。
+
+    ``bind_tools`` 的返回声明成 ``Runnable[..., BaseMessage]``，而拼分片要的是
+    ``AIMessageChunk``；运行期就是 ChatOpenAI 的流，所以只放宽类型。
+    """
+    model: Any = llm.bind_tools(tools) if tools else llm
+    accumulated: AIMessageChunk | None = None
+    async for chunk in model.astream(messages):
+        accumulated = chunk if accumulated is None else accumulated + chunk
+    if accumulated is None:
+        raise RuntimeError("模型没有返回任何内容")
+    return accumulated
+
+
+async def _run_tool(
+    call: ToolCall, tools: list[BaseTool], *, agent: str, step: int
+) -> ToolMessage:
+    """执行一次工具调用：发过程块，并把结果交回模型。
+
+    过程块里的文本是**给用户看的**（调用了什么 / 拿到什么），模型拿到的是同一份
+    原文——不加工、不二次总结，否则模型看到的和用户看到的对不上。
+
+    工具报错不中断循环：把错误原文当结果交回模型，它看到「参数不对」比看到「整轮
+    失败」有用得多。这是「做好错误兜底」该做的部分，而不是替它选工具。
+    """
+    name = call["name"]
+    tool = next((item for item in tools if item.name == name), None)
+    blocks.start_block(
+        blocks.BLOCK_TOOL_CALL, agent=agent, step=step, meta={"tool": name}
+    )
+    blocks.delta_block(_render_call(name, call["args"]), agent=agent)
+    blocks.stop_block(agent=agent)
+    if tool is None:
+        available = "、".join(item.name for item in tools) or "（无）"
+        content = f"没有名为 {name} 的工具。可用工具：{available}"
+        status = blocks.STATUS_ERROR
+    else:
+        try:
+            result = await tool.ainvoke(call["args"])
+            content = result if isinstance(result, str) else str(result)
+            status = blocks.STATUS_COMPLETE
+        except Exception as exc:
+            content = f"工具执行失败：{exc}"
+            status = blocks.STATUS_ERROR
+            logger.warning(
+                "agent_tool_failed",
+                agent=agent,
+                tool=name,
+                error=str(exc)[:_MAX_ERROR_CHARS],
+            )
+    blocks.start_block(
+        blocks.BLOCK_TOOL_RESULT,
+        agent=agent,
+        step=step,
+        meta={"tool": name, "status": status},
+    )
+    blocks.delta_block(content, agent=agent)
+    blocks.stop_block(agent=agent, status=status)
+    return ToolMessage(content=content, tool_call_id=call.get("id") or name)
+
+
+async def _run_agent(
+    *, agent: AgentCode, prompt: str, question: str, tools: list[BaseTool], step: int
+) -> str:
+    """跑一个小工具循环，返回模型最后写下的正文。
+
+    机制：请求模型 → 它要工具就执行、把结果原文贴回去 → 再请求，直到它不再要工具
+    或到达 ``_MAX_TOOL_ROUNDS``。**调哪个工具、调几次由模型决定**，Python 只提供
+    工具清单与上限（见 ``agent_app/tools``）。
+
+    ``question`` 单独占一个 user 轮，而不是只塞进 system 里的 ``{query}``：只发
+    system 的请求会被部分 provider 当作非法对话，实测 ``DeepSeek-V3.2`` 在这种情况下
+    返回空 content 且不调工具（节点会静默产出空材料）。
+
+    走满上限说明模型在原地打转：记 warning 并返回最后那次的正文（通常为空），由
+    调用方决定不产出材料，而不是在这里编一段。
+    """
+    llm = get_agent_llm(agent)
+    messages: list[AnyMessage] = [
+        SystemMessage(content=prompt),
+        HumanMessage(content=question),
+    ]
+    for _ in range(_MAX_TOOL_ROUNDS):
+        response = await _turn(llm, tools, messages)
+        messages.append(response)
+        if not response.tool_calls:
+            return response.text
+        for call in response.tool_calls:
+            messages.append(await _run_tool(call, tools, agent=agent, step=step))
+    logger.warning(
+        "agent_tool_rounds_exhausted", agent=agent, step=step, rounds=_MAX_TOOL_ROUNDS
+    )
+    return ""
+
+
+async def _run_sub_agent(
+    agent: AgentCode,
+    template: str,
+    state: OrchestrationState,
+    user_id: uuid.UUID | None,
+) -> dict[str, Any]:
+    """三个子 Agent 共用的骨架：装配提示词 → 跑工具循环 → 产出 ``Contribution``。
+
+    失败（模型报错、超时、走满工具轮数）**不产出材料**，只记日志：整合节点该看到的
+    是「这一路没有材料」，而不是一份编出来的稿子。
+
+    ``sources`` 由工具回填（见 ``agent_app/tools/health.py``）——它是「这条结论的
+    依据是哪几份文件」，整合与反思要靠它核对正文里的数字有没有出处。
+    """
+    step = state.get("step", 0)
+    role: Literal["primary", "support"] = (
+        "primary" if state.get("primary") == agent else "support"
+    )
+    tools, used = _agent_tools(agent, user_id)
+    prompt = template.format(
+        role_hint=_role_hint(role, state),
+        query=(state.get("queries") or {}).get(agent)
+        or _last_user_text(state)
+        or EMPTY_PLACEHOLDER,
+        sub_questions="\n".join(
+            f"- {item}" for item in state.get("sub_questions") or []
+        )
+        or EMPTY_PLACEHOLDER,
+        material=_render_material(state, agent),
+    )
+    try:
+        content = await _run_agent(
+            agent=agent,
+            prompt=prompt,
+            question=_last_user_text(state) or EMPTY_PLACEHOLDER,
+            tools=tools,
+            step=step,
+        )
+    except Exception as exc:
+        logger.warning(
+            "agent_failed", agent=agent, step=step, error=str(exc)[:_MAX_ERROR_CHARS]
+        )
+        return {}
+    if not content.strip():
+        logger.info("agent_produced_nothing", agent=agent, step=step)
+        return {}
+    return {
+        "contributions": [
+            Contribution(
+                agent=agent,
+                step=step,
+                role=role,
+                content=content.strip(),
+                sources=list(dict.fromkeys(used)),
+            )
+        ]
+    }
+
+
+async def data_science(state: OrchestrationState) -> dict[str, Any]:
+    """数据科学 Agent：用用户自己的健康数据做定量分析。
+
+    它没有专属流程：工具清单（``agent_app/tools/health.py``）就是它的全部能力，
+    取哪些数据、算什么由模型自己决定；这里只负责给它身份、提示词与一条
+    ``Contribution``。取不到身份（非图执行环境）就不跑——没有 ``user_id`` 就没有
+    数据源，硬答只会编出数字。
+
+    第一版**不做 Docker 沙箱、不出图表**（用户已定：先把流程跑通），
+    只做「查库 + 基于查询结果分析」。
+    """
+    user_id = _current_user_id()
+    if user_id is None:
+        logger.warning("agent_context_missing", agent="ds")
+        return {}
+    return await _run_sub_agent("ds", DS_PROMPT, state, user_id)
 
 
 def domain_expert(state: OrchestrationState) -> dict[str, Any]:

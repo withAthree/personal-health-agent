@@ -28,9 +28,11 @@ BLOCK_START = "block-start"
 BLOCK_DELTA = "block-delta"
 BLOCK_STOP = "block-stop"
 
-#: 块类型，取值见 ``schemas/chat.py`` 的 ``StreamKind``；本图用得到的是这两个。
+#: 块类型，取值见 ``schemas/chat.py`` 的 ``StreamKind``；本图用得到的是这四个。
 BLOCK_TEXT = "text"
 BLOCK_THINKING = "thinking"
+BLOCK_TOOL_CALL = "tool_call"
+BLOCK_TOOL_RESULT = "tool_result"
 
 #: 结束状态，取值见 ``schemas/chat.py`` 的 ``StreamBlockStatus``。
 STATUS_COMPLETE = "complete"
@@ -67,20 +69,24 @@ def _emit(payload: dict[str, Any]) -> None:
         )
 
 
-def start_block(kind: str, *, agent: str, step: int) -> None:
+def start_block(
+    kind: str, *, agent: str, step: int, meta: dict[str, Any] | None = None
+) -> None:
     """开始一个过程块。
 
     Args:
         kind: 块类型，见本模块的 ``BLOCK_*``。
         agent: 产出这个块的节点代号，必须与 ``graph.NODE_AGENT_SOURCE`` 的取值一致。
         step: 轮次，取自 ``state["step"]``。
+        meta: 附加字段（例如工具块带上 ``tool`` / ``status``）。只放能 JSON 序列化的
+            值——它会原样进 SSE；``agent`` 由本函数写入，调用方不用自己塞。
     """
     _emit(
         {
             "type": BLOCK_START,
             "kind": kind,
             "step": step,
-            "meta": {"agent": agent},
+            "meta": {**(meta or {}), "agent": agent},
         }
     )
 

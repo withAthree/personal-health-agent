@@ -23,16 +23,20 @@ from langchain_core.messages import (
     AnyMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
+from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel
 
 from agent_app.core.database import async_session_maker
 from agent_app.memory.middleware import MemoryContext
 from agent_app.models.file import FileMetadata
+from agent_app.orchestration import blocks as blocks_module
 from agent_app.orchestration import graph as g
 from agent_app.orchestration import nodes
 from agent_app.orchestration.state import (
     MAX_ROUNDS,
+    Contribution,
     OrchestrationState,
     RoutingDecision,
 )
@@ -119,6 +123,99 @@ class _StubStreamLLM:
             raise self.error
 
 
+class _StubToolLLM:
+    """冒充子 Agent 客户端：按剧本依次给出工具调用或正文。
+
+    剧本走完后一直重复最后一项——这正是「模型盯着同一份数据反复取」的形态，
+    用来测 ``_MAX_TOOL_ROUNDS`` 的兜底。
+    """
+
+    def __init__(
+        self, turns: list[AIMessageChunk], *, error: Exception | None = None
+    ) -> None:
+        self.turns = turns
+        self.error = error
+        self.messages: list[list[AnyMessage]] = []
+        self.bound: list[int] = []
+        self._index = 0
+
+    def bind_tools(self, tools: list[BaseTool]) -> _StubToolLLM:
+        self.bound.append(len(tools))
+        return self
+
+    async def astream(
+        self, messages: list[AnyMessage]
+    ) -> AsyncIterator[AIMessageChunk]:
+        self.messages.append(list(messages))
+        if self.error is not None:
+            raise self.error
+        turn = self.turns[min(self._index, len(self.turns) - 1)]
+        self._index += 1
+        yield turn
+
+
+def _tool_turn(
+    name: str, args: dict[str, Any], call_id: str = "call-1"
+) -> AIMessageChunk:
+    """一个「模型要调工具」的分片。"""
+    return AIMessageChunk(
+        content="",
+        tool_calls=[{"name": name, "args": args, "id": call_id, "type": "tool_call"}],
+    )
+
+
+def _stub_agent_llm(monkeypatch: pytest.MonkeyPatch, llm: _StubToolLLM) -> _StubToolLLM:
+    """把子 Agent 客户端换成桩，并让 ``_current_user_id`` 返回一个真身份。"""
+    monkeypatch.setattr(nodes, "get_agent_llm", lambda _agent: llm)
+    monkeypatch.setattr(nodes, "_current_user_id", uuid.uuid4)
+    return llm
+
+
+def _stub_health_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    result: str = "2026-10-01  6.7",
+    sources: list[str] | None = None,
+    error: Exception | None = None,
+) -> list[dict[str, Any]]:
+    """把真实健康数据工具换成假的，返回它被调用的记录。"""
+    seen: list[dict[str, Any]] = []
+
+    @tool
+    async def read_health_metric(zh_name: str) -> str:
+        """读取某个指标的逐次测量值。"""
+        seen.append({"zh_name": zh_name})
+        if error is not None:
+            raise error
+        return result
+
+    def _build(_user_id: uuid.UUID, used: list[str]) -> list[BaseTool]:
+        used.extend(sources or [])
+        return [read_health_metric]
+
+    monkeypatch.setattr(nodes, "build_health_tools", _build)
+    return seen
+
+
+def _spy_blocks(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+    """把过程块换成记录器，返回（事件类型 + 载荷）列表。"""
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    def _start(kind: str, **kwargs: object) -> None:
+        events.append(("start", {"kind": kind, **kwargs}))
+
+    def _delta(text: str, **kwargs: object) -> None:
+        events.append(("delta", {"text": text, **kwargs}))
+
+    def _stop(**kwargs: object) -> None:
+        events.append(("stop", kwargs))
+
+    monkeypatch.setattr(blocks_module, "start_block", _start)
+    monkeypatch.setattr(blocks_module, "delta_block", _delta)
+    monkeypatch.setattr(blocks_module, "stop_block", _stop)
+    return events
+
+
 def _stub_model(
     monkeypatch: pytest.MonkeyPatch,
     result: RoutingDecision | dict[str, Any] | Exception,
@@ -163,7 +260,7 @@ def _stub_graph(
     用例不能复用 ``get_orchestration_graph()`` 缓存的那一张，要自己 build 一次。
     ``reflect`` 留空表示用真的（专门测它的空产出短路）。
     """
-    calls = {"reflect": 0, "finalize": 0, "memory": 0}
+    calls = {"reflect": 0, "finalize": 0, "memory": 0, "agent": 0}
     real_reflect = nodes.reflect
     _stub_router(monkeypatch, decision)
 
@@ -182,9 +279,18 @@ def _stub_graph(
         calls["memory"] += 1
         return {}
 
+    def _counting_agent(state: OrchestrationState) -> dict[str, Any]:
+        # 三个子 Agent 现在真会取数、调模型（单位 4 起），图级用例一律换成桩。
+        del state
+        calls["agent"] += 1
+        return {}
+
     monkeypatch.setattr(nodes, "reflect", _counting_reflect)
     monkeypatch.setattr(nodes, "finalize", _counting_finalize)
     monkeypatch.setattr(nodes, "memory", _counting_memory)
+    monkeypatch.setattr(nodes, "data_science", _counting_agent)
+    monkeypatch.setattr(nodes, "domain_expert", _counting_agent)
+    monkeypatch.setattr(nodes, "health_coach", _counting_agent)
     return calls
 
 
@@ -665,3 +771,241 @@ async def test_finalize_raises_when_the_model_fails(
 
     with pytest.raises(RuntimeError, match="上游 500"):
         await nodes.finalize(_state(primary="general"))
+
+
+# =====================================================================
+# 数据科学 Agent（单位 4：健康数据工具 + 小工具循环）
+# =====================================================================
+
+
+async def test_data_science_hits_no_model_without_a_user_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(nodes, "_current_user_id", lambda: None)
+    monkeypatch.setattr(
+        nodes, "get_agent_llm", lambda _agent: pytest.fail("没有身份就不该问模型")
+    )
+
+    assert await nodes.data_science(_state(primary="ds")) == {}
+
+
+async def test_data_science_turns_a_tool_call_into_a_contribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = _stub_agent_llm(
+        monkeypatch,
+        _StubToolLLM(
+            [
+                _tool_turn("read_health_metric", {"zh_name": "空腹血糖"}),
+                AIMessageChunk(content="近一个月空腹血糖从 7.0 降到 6.4。"),
+            ]
+        ),
+    )
+    seen = _stub_health_tools(monkeypatch, sources=["体检报告.pdf"])
+    events = _spy_blocks(monkeypatch)
+
+    update = await nodes.data_science(
+        _state(primary="ds", step=0, queries={"ds": "看近一个月的空腹血糖走势"})
+    )
+
+    contribution = update["contributions"][0]
+    assert (contribution.agent, contribution.step, contribution.role) == (
+        "ds",
+        0,
+        "primary",
+    )
+    assert contribution.content == "近一个月空腹血糖从 7.0 降到 6.4。"
+    assert contribution.sources == ["体检报告.pdf"]
+    assert seen == [{"zh_name": "空腹血糖"}]
+    assert (
+        "start",
+        {
+            "kind": "tool_call",
+            "agent": "ds",
+            "step": 0,
+            "meta": {"tool": "read_health_metric"},
+        },
+    ) in events
+    assert (
+        "delta",
+        {"text": 'read_health_metric({"zh_name": "空腹血糖"})', "agent": "ds"},
+    ) in events
+    assert events[-1] == ("stop", {"agent": "ds", "status": "complete"})
+    # 工具返回的原文既交给模型、也发给用户，不二次加工
+    tool_message = llm.messages[1][-1]
+    assert isinstance(tool_message, ToolMessage)
+    assert tool_message.content == "2026-10-01  6.7"
+    assert "看近一个月的空腹血糖走势" in str(llm.messages[0][0].content)
+
+
+async def test_data_science_falls_back_to_the_user_message_as_the_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = _stub_agent_llm(monkeypatch, _StubToolLLM([AIMessageChunk(content="好的")]))
+    _stub_health_tools(monkeypatch)
+
+    await nodes.data_science(_state(primary="ds", queries={}))
+
+    assert "我最近血糖怎么样" in str(llm.messages[0][0].content)
+
+
+async def test_the_sub_agent_gets_the_user_message_as_its_own_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 只发 system 的请求会被部分 provider（实测 DeepSeek-V3.2）回成空正文且不调工具。
+    llm = _stub_agent_llm(monkeypatch, _StubToolLLM([AIMessageChunk(content="好的")]))
+    _stub_health_tools(monkeypatch)
+
+    await nodes.data_science(_state(primary="ds"))
+
+    system, question = llm.messages[0]
+    assert isinstance(system, SystemMessage)
+    assert isinstance(question, HumanMessage)
+    assert question.content == "我最近血糖怎么样"
+
+
+async def test_data_science_hands_material_back_when_it_is_the_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = _stub_agent_llm(
+        monkeypatch, _StubToolLLM([AIMessageChunk(content="近 7 天日均 7300 步。")])
+    )
+    _stub_health_tools(monkeypatch)
+
+    update = await nodes.data_science(
+        _state(
+            primary="hc",
+            step=1,
+            contributions=[
+                Contribution(
+                    agent="hc",
+                    step=0,
+                    role="primary",
+                    content="先聊睡眠。",
+                    sources=[],
+                )
+            ],
+            gaps=["缺最近两周的步数"],
+        )
+    )
+
+    contribution = update["contributions"][0]
+    assert (contribution.role, contribution.step) == ("support", 1)
+    system = str(llm.messages[0][0].content)
+    assert "先聊睡眠。" in system  # 局部通信：从共享 state 读主 Agent 的产物
+    assert "缺最近两周的步数" in system
+
+
+async def test_a_failing_tool_is_handed_back_to_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = _stub_agent_llm(
+        monkeypatch,
+        _StubToolLLM(
+            [
+                _tool_turn("read_health_metric", {"zh_name": "尿酸"}),
+                AIMessageChunk(content="没取到尿酸数据。"),
+            ]
+        ),
+    )
+    _stub_health_tools(monkeypatch, error=RuntimeError("数据库连接超时"))
+    events = _spy_blocks(monkeypatch)
+
+    update = await nodes.data_science(_state(primary="ds"))
+
+    assert "工具执行失败：数据库连接超时" in str(llm.messages[1][-1].content)
+    assert update["contributions"][0].content == "没取到尿酸数据。"
+    assert ("stop", {"agent": "ds", "status": "error"}) in events
+
+
+async def test_an_unknown_tool_is_reported_back_to_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = _stub_agent_llm(
+        monkeypatch,
+        _StubToolLLM(
+            [
+                _tool_turn("read_blood_pressure", {}),
+                AIMessageChunk(content="手上没有这个工具。"),
+            ]
+        ),
+    )
+    _stub_health_tools(monkeypatch)
+
+    update = await nodes.data_science(_state(primary="ds"))
+
+    assert "没有名为 read_blood_pressure 的工具" in str(llm.messages[1][-1].content)
+    assert update["contributions"][0].content == "手上没有这个工具。"
+
+
+async def test_the_tool_loop_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm = _stub_agent_llm(
+        monkeypatch,
+        _StubToolLLM([_tool_turn("read_health_metric", {"zh_name": "空腹血糖"})]),
+    )
+    seen = _stub_health_tools(monkeypatch)
+
+    assert await nodes.data_science(_state(primary="ds")) == {}
+    assert len(seen) == nodes._MAX_TOOL_ROUNDS
+    assert len(llm.messages) == nodes._MAX_TOOL_ROUNDS
+
+
+async def test_data_science_produces_nothing_when_the_model_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_agent_llm(
+        monkeypatch,
+        _StubToolLLM([AIMessageChunk(content="x")], error=RuntimeError("上游 500")),
+    )
+    _stub_health_tools(monkeypatch)
+
+    assert await nodes.data_science(_state(primary="ds")) == {}
+
+
+async def test_data_science_produces_nothing_on_an_empty_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_agent_llm(monkeypatch, _StubToolLLM([AIMessageChunk(content="   ")]))
+    _stub_health_tools(monkeypatch)
+
+    assert await nodes.data_science(_state(primary="ds")) == {}
+
+
+def test_render_gaps_is_empty_on_the_first_round() -> None:
+    assert nodes._render_gaps(_state()) == ""
+
+
+def test_material_carries_the_other_agents_and_the_gaps() -> None:
+    material = nodes._render_material(
+        _state(
+            contributions=[
+                Contribution(
+                    agent="ds",
+                    step=0,
+                    role="support",
+                    content="日均 7300 步。",
+                    sources=["体检报告.pdf"],
+                ),
+                Contribution(
+                    agent="hc",
+                    step=1,
+                    role="primary",
+                    content="先从睡眠开始。",
+                    sources=[],
+                ),
+            ]
+        ),
+        "hc",
+    )
+
+    assert "### 来自 ds（第 1 轮，支持 Agent）" in material
+    assert "日均 7300 步。" in material
+    assert "（依据：体检报告.pdf）" in material
+    assert "先从睡眠开始。" not in material  # 自己不重复喂回去
+    assert "我最近血糖怎么样" in material
+
+
+def test_material_says_none_when_there_is_nothing() -> None:
+    state = _state(messages=[], contributions=[])
+
+    assert nodes._render_material(state, "ds") == "（暂无）"
