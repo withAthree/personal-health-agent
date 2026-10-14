@@ -26,14 +26,17 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import BaseTool, tool
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
 from agent_app.core.database import async_session_maker
 from agent_app.memory.middleware import MemoryContext
 from agent_app.models.file import FileMetadata
 from agent_app.orchestration import blocks as blocks_module
+from agent_app.orchestration import coach, nodes
 from agent_app.orchestration import graph as g
-from agent_app.orchestration import nodes
+from agent_app.orchestration.coach import CoachState
 from agent_app.orchestration.state import (
     MAX_ROUNDS,
     Contribution,
@@ -285,12 +288,29 @@ def _stub_graph(
         calls["agent"] += 1
         return {}
 
+    def _counting_coach(state: CoachState) -> dict[str, Any]:
+        # 子图节点必须把参数注解成 ``CoachState``：langgraph 是拿函数签名的注解推
+        # ``input_schema`` 的，拿 ``OrchestrationState`` 去建一张 ``CoachState`` 的图，
+        # 会在 ``add_node`` 时因同名 channel 类型不一致报错。
+        del state
+        calls["agent"] += 1
+        return {}
+
+    def _stub_coach() -> CompiledStateGraph[Any, Any, Any, Any]:
+        # HC 已经是一个子图（``coach.build_coach_subgraph``）：图级用例只关心它作为
+        # 一个节点被调度了几次，用一张只有一个节点的最小图顶上。
+        stub = StateGraph(CoachState)
+        stub.add_node("coach_stub", _counting_coach)
+        stub.add_edge(START, "coach_stub")
+        stub.add_edge("coach_stub", END)
+        return stub.compile()
+
     monkeypatch.setattr(nodes, "reflect", _counting_reflect)
     monkeypatch.setattr(nodes, "finalize", _counting_finalize)
     monkeypatch.setattr(nodes, "memory", _counting_memory)
     monkeypatch.setattr(nodes, "data_science", _counting_agent)
     monkeypatch.setattr(nodes, "domain_expert", _counting_agent)
-    monkeypatch.setattr(nodes, "health_coach", _counting_agent)
+    monkeypatch.setattr(coach, "build_coach_subgraph", _stub_coach)
     return calls
 
 
@@ -976,7 +996,7 @@ def test_render_gaps_is_empty_on_the_first_round() -> None:
 
 
 def test_material_carries_the_other_agents_and_the_gaps() -> None:
-    material = nodes._render_material(
+    material = nodes.render_material(
         _state(
             contributions=[
                 Contribution(
@@ -1008,4 +1028,58 @@ def test_material_carries_the_other_agents_and_the_gaps() -> None:
 def test_material_says_none_when_there_is_nothing() -> None:
     state = _state(messages=[], contributions=[])
 
-    assert nodes._render_material(state, "ds") == "（暂无）"
+    assert nodes.render_material(state, "ds") == "（暂无）"
+
+
+def test_agent_source_covers_the_coach_subgraph_nodes() -> None:
+    """子图里的模型分片带的是**内层**节点名，不登记就会被 ``chat.py`` 丢掉。"""
+    inner = set(coach.build_coach_subgraph().get_graph().nodes) - {
+        "__start__",
+        "__end__",
+    }
+
+    assert inner
+    for name in inner:
+        assert g.NODE_AGENT_SOURCE[name] == "hc"
+
+
+async def test_the_coach_subgraph_contributes_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HC 子图接进外层图后，父状态里的材料只多这一份。
+
+    子图把 ``contributions`` 声明成了不带 reducer 的普通 channel（见 ``coach`` 的模块
+    docstring）：真接进来跑一遍，才能确认这份产出没有被 ``operator.add`` 加两遍。
+    """
+    _stub_router(
+        monkeypatch, RoutingDecision(primary="hc", queries={"hc": "坚持不下来怎么调"})
+    )
+    llm = _StubStreamLLM(["这周先两次，每次二十分钟。"])
+    monkeypatch.setattr(nodes, "get_agent_llm", lambda _agent: llm)
+
+    async def _deliver(prompt: str) -> coach.CoachVerdict:
+        del prompt
+        return coach.CoachVerdict(verdict="deliver")
+
+    def _noop(state: OrchestrationState) -> dict[str, Any]:
+        del state
+        return {}
+
+    monkeypatch.setattr(coach, "_judge", _deliver)
+    monkeypatch.setattr(nodes, "reflect", lambda _state: {"sufficient": True})
+    monkeypatch.setattr(nodes, "finalize", _noop)
+    monkeypatch.setattr(nodes, "memory", _noop)
+
+    state = (
+        await g.build_orchestration_graph()
+        .compile()
+        .ainvoke(
+            {},
+            {"recursion_limit": g.RECURSION_LIMIT},
+            context=MemoryContext(user_id=uuid.uuid4()),
+        )
+    )
+
+    contributions = list(state["contributions"])
+    assert [item.agent for item in contributions] == ["hc"]
+    assert contributions[0].content == "这周先两次，每次二十分钟。"

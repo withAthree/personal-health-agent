@@ -22,6 +22,10 @@
                            │                              └─→ memory  ─┤
                            └─ 不够 ─→ next_round ─→ orchestrator      └→ END
 
+其中 ``health_coach`` 不是普通节点而是一个**子图**（``orchestration/coach.py``，见该模块
+docstring 的内环拓扑）：一轮教练回复内部有「起草 → 审核 → 最多重写一次」的多步与
+自己的停止条件。它的内部节点名也要登记进 ``NODE_AGENT_SOURCE``。
+
 三条贯穿全图的约定（改 ``api/v1/chat.py`` 时按这个来）：
 
 1. **节点名 → agent_source**：见 ``NODE_AGENT_SOURCE``。现在 ``chat.py`` 用
@@ -47,7 +51,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from agent_app.memory.middleware import MemoryContext
-from agent_app.orchestration import nodes
+from agent_app.orchestration import coach, nodes
 from agent_app.orchestration.state import (
     MAX_ROUNDS,
     AgentCode,
@@ -93,6 +97,11 @@ NODE_AGENT_SOURCE: dict[str, str] = {
     NEXT_ROUND: "orchestrator",
     FINALIZE: "orchestrator",
     MEMORY: "memory",
+    # HC 子图的**内部**节点：子图里模型分片与过程块带的是内层节点名，
+    # 也要在这张表里各占一条，否则 ``chat.py`` 会把它们当成不认识的节点丢掉。
+    coach.COACH_REPLY: "hc",
+    coach.COACH_CHECK: "hc",
+    coach.COACH_OUT: "hc",
 }
 
 
@@ -105,8 +114,9 @@ NODE_AGENT_SOURCE: dict[str, str] = {
 #: 不能省。LangGraph 默认 25，而最坏路径（主 + 两个支持 Agent，反思一直说不够，
 #: 跑满 ``MAX_ROUNDS`` 次回环）在节点全是空操作时就实测要 26 步——4 轮 × 6 个
 #: superstep（编排、支持 Agent、主 Agent、整合、反思、next_round，最后一轮没有
-#: next_round）+ finalize + memory，**默认值正好差一步**。真实节点内部还要调工具、
-#: 每次工具往返都要再走一步，所以留一倍余量。
+#: next_round）+ finalize + memory，**默认值正好差一步**。真实节点内部还要调工具，
+#: 每次工具往返都要再走一步；HC 子图的每个节点也计一步（一轮教练最多 3 步），
+#: 所以留一倍余量。
 RECURSION_LIMIT = 50
 
 
@@ -201,7 +211,7 @@ def build_orchestration_graph() -> StateGraph[
     graph.add_node(ORCHESTRATOR, nodes.orchestrator)
     graph.add_node(DATA_SCIENCE, nodes.data_science)
     graph.add_node(DOMAIN_EXPERT, nodes.domain_expert)
-    graph.add_node(HEALTH_COACH, nodes.health_coach)
+    graph.add_node(HEALTH_COACH, coach.build_coach_subgraph())
     graph.add_node(INTEGRATE, nodes.integrate)
     graph.add_node(REFLECT, nodes.reflect)
     graph.add_node(NEXT_ROUND, nodes.next_round)

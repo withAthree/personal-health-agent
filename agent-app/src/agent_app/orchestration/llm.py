@@ -14,6 +14,8 @@
 对话、要一次拿到完整结果、要能 ``with_structured_output``，所以走非流式低温的
 ``get_utility_llm``，而不是 ``get_dialog_llm``（后者是给对话输出调的：流式、
 temperature 0.7）。用户可见的正文只由其中一个节点流式产出，见 ``graph.py`` 顶部。
+**业务 Agent 内部的判断节点**（目前只有 HC 子图的审核节点）属于同一类，用
+``get_agent_judge_llm``：它比业务 Agent 自己的模型，但走非流式低温。
 """
 
 from langchain_openai import ChatOpenAI
@@ -48,6 +50,28 @@ def get_agent_llm(agent: AgentCode) -> ChatOpenAI:
         该 Agent 配置的模型对应的客户端；未单独配置时与 ``get_llm()`` 同一个实例。
     """
     return get_dialog_llm(_dialog_model(agent))
+
+
+def get_agent_judge_llm(agent: AgentCode) -> ChatOpenAI:
+    """返回某个业务 Agent 内部**判断节点**的客户端（非流式、温度 0.0）。
+
+    为什么要单独一个工厂，而不是直接用 ``get_agent_llm(agent)``：判断节点要的是
+    稳定可解析的结论（HC 子图的审核节点要 ``with_structured_output``），不是一个
+    会继续说下去的对话——用 temperature 0.7 的流式客户端做分类，同一份草稿能
+    在两次调用间给出不同结论。
+
+    与 ``get_orchestrator_llm()`` 的区别在**用哪个模型**：编排这类跨 Agent 的控制
+    节点用 ``settings.llm_orchestrator_model``，而 Agent 内部的判断跟着这个 Agent 自己的
+    选型走（HC 的判断与起草用同一个 ``settings.llm_hc_model``）——换模型时
+    一个 Agent 整体换，不会出现「起草换了、审核没换」。
+
+    Args:
+        agent: Agent 代号，取值见 ``orchestration/state.py`` 的 ``AgentCode``。
+
+    Returns:
+        该 Agent 模型对应的旁路客户端。
+    """
+    return get_utility_llm(_dialog_model(agent), temperature=0.0)
 
 
 def get_general_llm() -> ChatOpenAI:

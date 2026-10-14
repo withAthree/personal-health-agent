@@ -139,6 +139,16 @@ class OrchestrationState(TypedDict, total=False):
     #: 反思节点给出的缺口清单（每条要具体到「缺什么、谁能补」）。
     gaps: list[str]
 
+    #: 需要**用户本人**补充的信息（旧伤、疾病史、可支配时间、器械、偏好）。
+    #: 由 HC 子图上报告（``orchestration/coach.py`` 的 ``user_gaps``）：只有用户答得上，
+    #: 所以反思节点拿到它时应该向用户提问，而不是回环取数。
+    user_gaps: list[str]
+
+    #: HC 子图上报的**系统侧**数据缺口（需要 DS / DE 去补）。
+    #: 与 ``gaps`` 分开是为了不互相覆盖：``gaps`` 是反思节点每轮算出的总缺口
+    #: （``stalled`` 判据靠它），这里只记 HC 自己缺的那部分。
+    context_gaps: list[str]
+
     #: 反思节点的结论：信息是否足够回复用户。
     sufficient: bool
 

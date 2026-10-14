@@ -28,11 +28,14 @@ BLOCK_START = "block-start"
 BLOCK_DELTA = "block-delta"
 BLOCK_STOP = "block-stop"
 
-#: 块类型，取值见 ``schemas/chat.py`` 的 ``StreamKind``；本图用得到的是这四个。
+#: 块类型，取值见 ``schemas/chat.py`` 的 ``StreamKind``；本图用得到的是这五个。
 BLOCK_TEXT = "text"
 BLOCK_THINKING = "thinking"
 BLOCK_TOOL_CALL = "tool_call"
 BLOCK_TOOL_RESULT = "tool_result"
+#: ``plan`` 是「正在做什么、为什么重做」这类方案说明（HC 子图重写草稿时先用它
+#: 占住等待时间），不是正文，也不代表工具调用。
+BLOCK_PLAN = "plan"
 
 #: 结束状态，取值见 ``schemas/chat.py`` 的 ``StreamBlockStatus``。
 STATUS_COMPLETE = "complete"

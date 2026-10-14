@@ -3,8 +3,13 @@
 **当前进度**：``intake`` / ``orchestrator`` 已实现（单位 2，编排决策）；``data_science``
 已实现（单位 4：健康数据工具 + 小工具循环）；``finalize`` 已实现两种形态（转发
 ``draft`` / 现生成正文），``reflect`` 只实现了「没有产出可评时直接判够」的短路
-（流程调整），三条判据待单位 7；``domain_expert`` / ``health_coach`` / ``integrate`` /
-``memory`` 仍是空操作。
+（流程调整），三条判据待单位 7；``domain_expert`` / ``integrate`` / ``memory`` 仍是
+空操作。
+
+``health_coach`` **不在本模块**：它是一个子图（``orchestration/coach.py``），因为一轮
+教练回复内部有「起草 → 审核 → 可能重写」的多步与自己的停止条件。本模块导出的
+``last_user_text`` / ``render_material`` / ``role_hint`` / ``run_agent`` /
+``agent_role`` / ``make_contribution`` 是它复用的共用件（所以不带下划线）。
 
 实现某个节点时**只改它自己的函数体**，不要动 ``graph.py`` 里的连线；唯一例外是
 ``next_round``——它在骨架阶段就实现完了（理由见该函数）。
@@ -370,7 +375,7 @@ async def orchestrator(state: OrchestrationState) -> dict[str, Any]:
 # =====================================================================
 
 
-def _last_user_text(state: OrchestrationState) -> str:
+def last_user_text(state: OrchestrationState) -> str:
     """state 里最后一条用户消息；没有就返回空串。"""
     for message in reversed(state.get("messages") or []):
         if isinstance(message, HumanMessage):
@@ -390,7 +395,7 @@ def _render_gaps(state: OrchestrationState) -> str:
     )
 
 
-def _render_material(state: OrchestrationState, agent: AgentCode) -> str:
+def render_material(state: OrchestrationState, agent: AgentCode) -> str:
     """拼子 Agent 的「用户原话 + 其他 Agent 已交回的材料 + 上一轮缺口」。
 
     支持 Agent 先跑、主 Agent 后跑（见 ``graph.route_from_orchestrator``），所以主
@@ -398,7 +403,7 @@ def _render_material(state: OrchestrationState, agent: AgentCode) -> str:
     传递，不是 Agent 之间互相调用。
     """
     sections: list[str] = []
-    if question := _last_user_text(state):
+    if question := last_user_text(state):
         sections.append(f"## 用户这句话的原话\n{question}")
     others = [item for item in state.get("contributions") or [] if item.agent != agent]
     if others:
@@ -433,11 +438,39 @@ def _agent_tools(
     return [], []
 
 
-def _role_hint(role: Literal["primary", "support"], state: OrchestrationState) -> str:
+def role_hint(role: Literal["primary", "support"], state: OrchestrationState) -> str:
     """主 / 支持两种身份对应的提示词段落。"""
     if role == "primary":
         return AGENT_PRIMARY_HINT
     return AGENT_SUPPORT_HINT.format(primary=state.get("primary") or "其他 Agent")
+
+
+def agent_role(
+    agent: AgentCode, state: OrchestrationState
+) -> Literal["primary", "support"]:
+    """这个 Agent 本轮的主 / 辅身份。主 / 辅是**本轮的角色**，不是 Agent 的属性。"""
+    return "primary" if state.get("primary") == agent else "support"
+
+
+def make_contribution(
+    *,
+    agent: AgentCode,
+    step: int,
+    role: Literal["primary", "support"],
+    content: str,
+    sources: list[str],
+) -> Contribution:
+    """构造一份 Agent 产出。
+
+    ``sources`` 按顺序去重：同一个文件常常是好几条数值的共同来源。
+    """
+    return Contribution(
+        agent=agent,
+        step=step,
+        role=role,
+        content=content.strip(),
+        sources=list(dict.fromkeys(sources)),
+    )
 
 
 def _render_call(name: str, args: dict[str, Any]) -> str:
@@ -512,7 +545,7 @@ async def _run_tool(
     return ToolMessage(content=content, tool_call_id=call.get("id") or name)
 
 
-async def _run_agent(
+async def run_agent(
     *, agent: AgentCode, prompt: str, question: str, tools: list[BaseTool], step: int
 ) -> str:
     """跑一个小工具循环，返回模型最后写下的正文。
@@ -561,26 +594,24 @@ async def _run_sub_agent(
     依据是哪几份文件」，整合与反思要靠它核对正文里的数字有没有出处。
     """
     step = state.get("step", 0)
-    role: Literal["primary", "support"] = (
-        "primary" if state.get("primary") == agent else "support"
-    )
+    role = agent_role(agent, state)
     tools, used = _agent_tools(agent, user_id)
     prompt = template.format(
-        role_hint=_role_hint(role, state),
+        role_hint=role_hint(role, state),
         query=(state.get("queries") or {}).get(agent)
-        or _last_user_text(state)
+        or last_user_text(state)
         or EMPTY_PLACEHOLDER,
         sub_questions="\n".join(
             f"- {item}" for item in state.get("sub_questions") or []
         )
         or EMPTY_PLACEHOLDER,
-        material=_render_material(state, agent),
+        material=render_material(state, agent),
     )
     try:
-        content = await _run_agent(
+        content = await run_agent(
             agent=agent,
             prompt=prompt,
-            question=_last_user_text(state) or EMPTY_PLACEHOLDER,
+            question=last_user_text(state) or EMPTY_PLACEHOLDER,
             tools=tools,
             step=step,
         )
@@ -594,12 +625,8 @@ async def _run_sub_agent(
         return {}
     return {
         "contributions": [
-            Contribution(
-                agent=agent,
-                step=step,
-                role=role,
-                content=content.strip(),
-                sources=list(dict.fromkeys(used)),
+            make_contribution(
+                agent=agent, step=step, role=role, content=content, sources=used
             )
         ]
     }
@@ -632,15 +659,6 @@ def domain_expert(state: OrchestrationState) -> dict[str, Any]:
     * 产出**必须带 ``sources``**（命中的链接），整合节点要靠它核对「每个数值断言
       都能追到一次真实命中」；
     * 提示词硬约束：不做临床诊断、必须建议就医确诊、所有建议附医疗免责声明。
-    """
-    return {}
-
-
-def health_coach(state: OrchestrationState) -> dict[str, Any]:
-    """健康教练 Agent：行为改变、动机性访谈、制定长期计划。
-
-    落地时要做的：对话状态分析 → 教练策略选择（MI / CBT / SMART）→ 共情回应生成
-    → 目标跟踪更新（新目标 / 里程碑 / 障碍）。语气温暖、支持性、非评判性。
     """
     return {}
 
