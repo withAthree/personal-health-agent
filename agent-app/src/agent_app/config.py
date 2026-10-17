@@ -71,6 +71,28 @@ class Settings(BaseSettings):
     #: （不推荐，仅用于临时排查）。开发期直接改这里即可（理由见 ``llm_model``）。
     llm_ds_model: str = "deepseek-flash"
 
+    #: 医学证据分析员（DE）子 Agent 用的模型。
+    #: 与 ``llm_ds_model`` 同样**不跟着 ``llm_model`` 走**：DE 要判断“这条证据能不能
+    #: 支撑这个结论”，判错的表现是引了一篇不相关的论文而用户看不出来。**留空表示
+    #: 回落到 ``llm_model``**（不推荐，仅用于临时排查）。开发期直接改这里即可。
+    llm_de_model: str = "deepseek-flash"
+
+    #: 一次 DE 调用的整轮墙钟上限（秒）。DE 内部可能串起多次检索，单次 HTTP 超时
+    #: 管不住总时长；超时后 ``de/tool.py`` 返回可读提示，不向上抛异常。
+    #: 90 秒的依据：一次检索往返按 10 秒、最多 3 轮 ReAct、加上模型自身耗时。
+    de_timeout_s: float = 90.0
+
+    #: Tavily 的 API key。DE 的 ``web_search`` 只有这一个检索后端，没配 key 时
+    #: 工具直接返回「无法检索」，不回落其他来源——静默换源会让来源标注对不上。
+    search_api_key: str = ""
+
+    #: Tavily 的国家偏置。它**只做加权，不限制结果池**：中文查询仍然可能排进英文
+    #: 源，所以提示词里另外要求把「中国」写进检索词。
+    search_country: str = "china"
+
+    #: 单次检索的超时（秒），同时是连接与读取的上限。
+    search_timeout_s: float = 10.0
+
     #: 是否让对话模型输出思考过程（reasoning）。
     #: **DeepSeek 官方接口的思考模式默认是开的**（默认档 ``high``），关闭必须显式传
     #: ``extra_body={"thinking": {"type": "disabled"}}``（见 ``llm/client.py`` 的

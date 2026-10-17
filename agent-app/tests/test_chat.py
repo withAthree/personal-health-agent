@@ -1014,6 +1014,21 @@ async def test_chat_drops_question_left_unanswered_by_previous_turn(
     assert contents == ["第一问", _FAKE_ANSWER, "第二问", _FAKE_ANSWER]
 
 
+def test_note_from_accepts_both_child_agents() -> None:
+    """两个子 Agent 共用一条 ``custom`` 流：DS 推 ds_note，DE 推 de_note。"""
+    assert chat_module._note_from({"ds_note": "正在分析体重"}) == "正在分析体重"
+    assert chat_module._note_from({"de_note": "检索「空腹血糖」"}) == "检索「空腹血糖」"
+
+
+def test_note_from_ignores_unknown_shapes() -> None:
+    """这条通道只服务展示，认不出的形状必须静默丢弃而不是报错中断流。"""
+    assert chat_module._note_from({}) is None
+    assert chat_module._note_from({"unknown": "x"}) is None
+    assert chat_module._note_from({"de_note": ""}) is None
+    assert chat_module._note_from("纯字符串") is None
+    assert chat_module._note_from(None) is None
+
+
 def test_drop_trailing_questions_only_trims_unanswered_tail() -> None:
     """从账本重建上下文时，末尾没有回答的提问要被去掉。"""
     complete: list[BaseMessage] = [

@@ -42,6 +42,7 @@ from sse_starlette.sse import EventSourceResponse
 from agent_app.api.deps import AuthContext, get_auth_context
 from agent_app.core import stream_state
 from agent_app.core.database import async_session_maker
+from agent_app.de import collect as de_collect
 from agent_app.ds import collect
 from agent_app.llm.agent import get_agent
 from agent_app.llm.call_log import ModelCallLogger
@@ -83,7 +84,12 @@ _STREAM_MESSAGES: Literal["messages"] = "messages"
 _STREAM_CUSTOM: Literal["custom"] = "custom"
 
 #: 工具在自定义通道里用的键（见 ``agent_app/ds/tool.py``）。
-_NOTE_KEY = "ds_note"
+_NOTE_KEYS = ("ds_note", "de_note")
+"""工具往外推工作说明时用的键。
+
+DS 推 ``ds_note``（分析计划），DE 推 ``de_note``（正在检索什么、正在查哪个指标）。
+两个子 Agent 共用同一个 ``custom`` 流，所以这里用元组匹配而不是单个键。
+"""
 
 #: 过程块类型，见 ``document/中间过程可见-设计方案.md`` §5.4。
 _BLOCK_THINKING = "thinking"
@@ -164,13 +170,16 @@ def _blocks_from(chunk: BaseMessageChunk) -> list[tuple[str, str]]:
 def _note_from(payload: object) -> str | None:
     """从工具推来的自定义负载里取出一行工作说明。
 
-    DS 子 Agent 在算出分析计划后推 ``{"ds_note": "..."}``（见 ``ds/tool.py``）。
-    认不出来的形状一律忽略：这条通道只服务展示，不能影响生成。
+    DS 推 ``{"ds_note": "..."}``（见 ``ds/tool.py``），DE 推 ``{"de_note": "..."}``
+    （见 ``de/tool.py``）。认不出来的形状一律忽略：这条通道只服务展示，不能影响生成。
     """
     if not isinstance(payload, dict):
         return None
-    note = payload.get(_NOTE_KEY)
-    return note if isinstance(note, str) and note else None
+    for key in _NOTE_KEYS:
+        note = payload.get(key)
+        if isinstance(note, str) and note:
+            return note
+    return None
 
 
 def _open_block(state: stream_state.StreamState, kind: str) -> stream_state.StreamBlock:
@@ -692,6 +701,10 @@ async def _stream_chat(
     # LangGraph 的 state，而落库在这个函数的末尾，只能靠一个随调用作用域走的
     # ContextVar。退出时在 finally 里复位，异常与取消路径都不会留残留。
     ds_turn, ds_token = collect.begin()
+    # DE 的记账（本轮调用次数、答案复用）同样需要跨 tool 调用存活，理由同上。
+    # 工作说明的通道不在这里设：writer 只能在主 agent 的 tool 上下文里取到，
+    # 见 ``de/tool.py`` 的 ``_stream_writer``。
+    _de_turn, de_token = de_collect.begin()
     charts: list[dict[str, Any]] = []
     state = stream_state.StreamState(run_id=run_id)
     writer = stream_state.StreamStateWriter(session_id, state)
@@ -814,6 +827,7 @@ async def _stream_chat(
     finally:
         charts = list(ds_turn.charts)
         collect.finish(ds_token)
+        de_collect.finish(de_token)
 
     if current is not None:
         current.status = _BLOCK_COMPLETE

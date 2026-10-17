@@ -23,6 +23,8 @@ from psycopg_pool import AsyncConnectionPool
 
 from agent_app.config import settings
 from agent_app.core.database import to_libpq_dsn
+from agent_app.de.tool import de_expert
+from agent_app.de.tools import compare_health_measure
 from agent_app.ds.tool import ds_analysis
 from agent_app.llm.client import SYSTEM_PROMPT, get_llm
 from agent_app.llm.context import build_summarization_middleware
@@ -69,7 +71,7 @@ def get_agent() -> CompiledStateGraph[Any, Any, Any, Any]:
     """
     return create_agent(
         get_llm(),
-        tools=[ds_analysis],
+        tools=[ds_analysis, compare_health_measure, de_expert],
         system_prompt=SYSTEM_PROMPT,
         middleware=[build_summarization_middleware(), MemoryMiddleware()],
         checkpointer=get_checkpointer(),
