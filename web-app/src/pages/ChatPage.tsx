@@ -1015,27 +1015,8 @@ export function ChatPage() {
     /* 外层不再套 Card：右侧主内容区本身就是「聊天窗口」，再加一圈卡片边框只是多
        一层折线，也会让高度算不准 */
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-2 border-b px-5 py-3">
-        <Sparkles className="size-4 text-muted-foreground" aria-hidden="true" />
-        <h1 className="text-sm font-semibold">对话</h1>
-        <p className="text-xs text-muted-foreground">
-          回复会流式逐字显示
-          {sessionId === null ? '' : `（会话 ${sessionId.slice(0, 8)}）`}
-        </p>
-        <Button
-          variant="outline"
-          size="sm"
-          className="ml-auto"
-          onClick={startNewChat}
-          disabled={bubbles.length === 0}
-        >
-          <Plus />
-          新对话
-        </Button>
-      </header>
-
       {/* TODO(临时): 开发期用来肉眼确认摘要内容，压缩验收后连同 fetchSessionSummary 一起删除 */}
-      {sessionId === null ? null : (
+      {/* {sessionId === null ? null : (
         <div className="border-b bg-muted/30 px-5 py-2">
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="text-[10px]">
@@ -1058,7 +1039,7 @@ export function ChatPage() {
             </pre>
           ) : null}
         </div>
-      )}
+      )} */}
 
       {loadingHistory ? (
         <div className="grid flex-1 place-items-center px-5 py-5">
@@ -1130,7 +1111,7 @@ export function ChatPage() {
                   </div>
                 )}
                 <Textarea
-                  rows={2}
+                  rows={1}
                   placeholder="输入你的问题…"
                   className="max-h-40 min-h-14 resize-none border-0! bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0! aria-invalid:ring-0! dark:bg-transparent"
                   aria-invalid={messageError !== undefined}
