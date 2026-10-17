@@ -1,12 +1,13 @@
-"""LLM 客户端（硅基流动，OpenAI 兼容接口）。"""
+"""LLM 客户端（OpenAI 兼容接口，当前指向 DeepSeek 官方）。"""
 
 from functools import lru_cache
 from typing import Any
 
 from langchain_core.messages import AIMessageChunk
 from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
 from agent_app.config import settings
 
@@ -15,6 +16,10 @@ SYSTEM_PROMPT = (
     "你是一名专业的个人健康助手，负责回答一般健康知识问题，"
     "提供准确、有依据的健康信息。请使用简体中文，回答简洁清晰。"
     "你不是医生，涉及诊断、用药或急症时，请明确提示用户咨询专业医疗人员。"
+    "用户有自己的健康记录。问到他自己数据的趋势、数值或指标关系时，"
+    "先用 ds_analysis 工具拿到算好的结果再回答。"
+    "涉及用户数据的数字只能来自工具返回，不要自己推算、估算或补全；"
+    "工具说数据不足就是不足，如实告诉用户缺什么。"
 )
 
 
@@ -105,16 +110,28 @@ class ChatOpenAIWithReasoning(ChatOpenAI):
 def get_llm() -> ChatOpenAI:
     """返回对话用的 LLM 客户端单例。
 
-    是否输出思考过程由 ``settings.llm_enable_thinking`` 决定，关闭时请求体与
-    改动前完全一致（不传 ``extra_body``）。
+    思考模式**必须显式传**：DeepSeek 官方接口默认开启思考（默认档 ``high``），不传
+    等于开着；硅基流动则相反，不传就是关。所以两个分支都写出来，不依赖 provider
+    缺省值。
+
+    ``reasoning_effort`` 放在 ``extra_body`` 里而不是当作顶层关键字参数：两者最终都
+    落在请求体根上，但 ``extra_body`` 不依赖 langchain 是否认得这个字段名。
     """
+    if settings.llm_enable_thinking:
+        extra_body: dict[str, object] = {
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": settings.llm_thinking_effort,
+        }
+    else:
+        extra_body = {"thinking": {"type": "disabled"}}
+
     return ChatOpenAIWithReasoning(
         model=settings.llm_model,
         api_key=SecretStr(settings.llm_api_key) if settings.llm_api_key else None,
         base_url=settings.llm_base_url,
         temperature=0.7,
         streaming=True,
-        extra_body={"enable_thinking": True} if settings.llm_enable_thinking else None,
+        extra_body=extra_body,
     )
 
 
@@ -154,16 +171,44 @@ def get_parse_llm() -> ChatOpenAI:
     )
 
 
-def _build_utility_llm(model: str, *, temperature: float = 0.2) -> ChatOpenAI:
-    """旁路任务客户端的共同构造。
+@lru_cache(maxsize=1)
+def get_ds_llm() -> ChatOpenAI:
+    """返回**数据分析子 Agent（DS）**专用的 LLM 客户端单例。
 
-    旁路任务 = 上下文摘要 + 长期记忆抽取 + 文档解析抽取：都不与用户直接对话，
-    都需要一次性拿到完整结果（非流式），都不希望内容被重新演绎（低温）。
+    一个客户端服务两个调用点（``ds/graph.py`` 的 Planner 与 Coder）：两者的技术形态
+    完全一致（非流式、结构化输出、同一份输入：问题 + 指标目录摘要），差别只在 prompt
+    与 schema。分两个客户端只会多出一处需要同步的配置，没有任何区分度。
+
+    温度取 **0.2 而不是 0.0**：Coder 会重试，而重试的前提是这一次能写出与上一次不同的
+    代码——0.0 下模型很容易把同一份代码逐字再交一次，把重试预算白烧掉。0.2 仍远低于
+    对话客户端的 0.7，不会让模型偏离“忠于数据”这条要求。
+
+    它与 ``_build_utility_llm`` 的另外三个客户端**在任务位置上不同**：DS 在用户等待
+    路径上（用户的问题就是在等这个分析结果），不是旁路任务。共用的是技术形态，不是
+    优先级。
+    """
+    return _build_utility_llm(
+        settings.llm_ds_model or settings.llm_model,
+        temperature=0.2,
+    )
+
+
+def _build_utility_llm(model: str, *, temperature: float = 0.2) -> ChatOpenAI:
+    """非流式、低温的客户端工厂。
+
+    共用它的四个调用点里，三个是旁路任务（上下文摘要 + 长期记忆抽取 + 文档解析抽取），
+    一个是 DS 子 Agent（``get_ds_llm``）。四者的共同点是：不与用户直接对话、需要
+    一次性拿到完整结果（非流式）、不希望内容被重新演绎（低温）。DS 不在旁路，但它
+    要的正是同一种技术形态。
 
     ``profile`` 不能省：压缩阈值用的是百分比口径（``llm/context.py`` 的
     ``SUMMARY_TRIGGER_FRACTION`` / ``SUMMARY_KEEP_FRACTION``），而
     ``SummarizationMiddleware`` 只从 ``model.profile["max_input_tokens"]`` 取
     窗口大小，取不到就在**构造期**直接抛 ``ValueError``。
+
+    ``extra_body`` 显式关闭思考：DeepSeek 官方接口默认开启思考（默认档 ``high``），
+    不传等于开着。四个调用点都不需要思考；结构化输出还必须关掉它，理由见
+    ``structured_output()``。
     """
     return ChatOpenAI(
         model=model,
@@ -171,5 +216,25 @@ def _build_utility_llm(model: str, *, temperature: float = 0.2) -> ChatOpenAI:
         base_url=settings.llm_base_url,
         temperature=temperature,
         streaming=False,
+        extra_body={"thinking": {"type": "disabled"}},
         profile={"max_input_tokens": settings.llm_max_input_tokens},
     )
+
+
+def structured_output[ModelT: BaseModel](
+    llm: ChatOpenAI, schema: type[ModelT]
+) -> Runnable[Any, ModelT | dict[str, Any]]:
+    """让模型按 ``schema`` 输出结构化结果。
+
+    显式指定 ``method="function_calling"``，不用 langchain 的默认值——默认走
+    ``response_format={"type": "json_schema"}``，DeepSeek 官方接口回
+    ``400 This response_format type is unavailable now``；``method="json_mode"``
+    则要求提示词里出现 "json" 这个词，本项目的提示词里没有。
+
+    前提是思考模式已关（``_build_utility_llm()`` 负责）：开着思考时 DeepSeek 回
+    ``400 Thinking mode does not support this tool_choice``。
+
+    **只能用 ``_build_utility_llm()`` 造出来的客户端调它**，不要传 ``get_llm()``
+    那个流式高温客户端。
+    """
+    return llm.with_structured_output(schema, method="function_calling")

@@ -22,7 +22,7 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -42,6 +42,7 @@ from sse_starlette.sse import EventSourceResponse
 from agent_app.api.deps import AuthContext, get_auth_context
 from agent_app.core import stream_state
 from agent_app.core.database import async_session_maker
+from agent_app.ds import collect
 from agent_app.llm.agent import get_agent
 from agent_app.llm.call_log import ModelCallLogger
 from agent_app.memory.extract import spawn_memory_extraction
@@ -76,9 +77,20 @@ _MODEL_NODE = "model"
 #: 摘要中间件写回的消息带的标记（见 LangChain ``summarization.py``）。
 _SUMMARY_SOURCE = "summarization"
 
+#: LangGraph 流模式：模型分片走 ``messages``，工具自己发的消息走 ``custom``。
+#: 写成 ``Literal`` 是为了 ``astream(stream_mode=[...])`` 能通过类型检查。
+_STREAM_MESSAGES: Literal["messages"] = "messages"
+_STREAM_CUSTOM: Literal["custom"] = "custom"
+
+#: 工具在自定义通道里用的键（见 ``agent_app/ds/tool.py``）。
+_NOTE_KEY = "ds_note"
+
 #: 过程块类型，见 ``document/中间过程可见-设计方案.md`` §5.4。
 _BLOCK_THINKING = "thinking"
 _BLOCK_TEXT = "text"
+
+#: 工具推来的一行工作说明。它与 ``thinking`` 不同：内容不在模型分片里，也不进账本。
+_BLOCK_PLAN = "plan"
 
 #: 过程块状态。
 _BLOCK_RUNNING = "running"
@@ -147,6 +159,18 @@ def _blocks_from(chunk: BaseMessageChunk) -> list[tuple[str, str]]:
     if text := _chunk_text(chunk):
         deltas.append((_BLOCK_TEXT, text))
     return deltas
+
+
+def _note_from(payload: object) -> str | None:
+    """从工具推来的自定义负载里取出一行工作说明。
+
+    DS 子 Agent 在算出分析计划后推 ``{"ds_note": "..."}``（见 ``ds/tool.py``）。
+    认不出来的形状一律忽略：这条通道只服务展示，不能影响生成。
+    """
+    if not isinstance(payload, dict):
+        return None
+    note = payload.get(_NOTE_KEY)
+    return note if isinstance(note, str) and note else None
 
 
 def _open_block(state: stream_state.StreamState, kind: str) -> stream_state.StreamBlock:
@@ -349,8 +373,12 @@ async def _store_assistant_message(
     *,
     interrupted: bool = False,
     drop_trailing_partial: bool = False,
+    charts: list[dict[str, Any]] | None = None,
 ) -> None:
     """落库助手回复；被终止时只存已经流出去的那部分并打上标记。
+
+    ``charts`` 是这一轮里 DS 工具算出来的图表（已经翻译成 ECharts option）。它跟正文
+    一起落库，因为前端渲染气泡时只读账本，不读 checkpoint。
 
     重试轮传 ``drop_trailing_partial``：落库前把这条提问后面残留的「已终止」
     回复删掉。被终止的那一轮传 ``interrupted``：若账本末尾已经是回复（说明
@@ -380,6 +408,7 @@ async def _store_assistant_message(
                 role="assistant",
                 content=content,
                 agent_source=AGENT_SOURCE,
+                charts=charts or [],
                 interrupted=interrupted,
             )
         )
@@ -569,6 +598,7 @@ async def _persist_reply(
     *,
     interrupted: bool = False,
     drop_trailing_partial: bool = False,
+    charts: list[dict[str, Any]] | None = None,
 ) -> int:
     """落库助手回复，并同步压缩标记；返回当前「已被摘要覆盖的消息条数」。
 
@@ -581,6 +611,7 @@ async def _persist_reply(
             reply,
             interrupted=interrupted,
             drop_trailing_partial=drop_trailing_partial,
+            charts=charts,
         )
     if interrupted:
         return 0
@@ -657,6 +688,11 @@ async def _stream_chat(
         yield _sse({"type": "reset", "from_index": 0})
 
     collected: list[str] = []
+    # 模型在对话中途调 ds_analysis 时，图表与调用计数放在这里。tool 进不了
+    # LangGraph 的 state，而落库在这个函数的末尾，只能靠一个随调用作用域走的
+    # ContextVar。退出时在 finally 里复位，异常与取消路径都不会留残留。
+    ds_turn, ds_token = collect.begin()
+    charts: list[dict[str, Any]] = []
     state = stream_state.StreamState(run_id=run_id)
     writer = stream_state.StreamStateWriter(session_id, state)
     # 先落一次 running 状态：生成期间刷新页面也能看到「正在生成」。
@@ -670,19 +706,46 @@ async def _stream_chat(
         # 挂上回调记录模型实际收到的消息（含摘要那一次调用），用于验收上下文压缩
         config = _thread_config(session_id)
         config["callbacks"] = [ModelCallLogger()]
-        # LangGraph 在 ``stream_mode="messages"`` 下实际产出 ``(message, metadata)``
-        # 二元组，但类型标注给的是宽松联合，这里按运行时的真实形状收窄。
+        # 多个 ``stream_mode`` 时 LangGraph 产出 ``(mode, payload)`` 二元组，两种
+        # mode 的 payload 形状不同，所以下面按 mode 分派，不能直接解包。
         stream = cast(
-            "AsyncIterator[tuple[BaseMessageChunk, dict[str, Any]]]",
+            "AsyncIterator[tuple[str, Any]]",
             get_agent().astream(
                 {"messages": messages},
                 config,
-                stream_mode="messages",
+                # ``custom`` 是工具往外发消息的通道：DS 子 Agent 在算出分析计划后推
+                # 一行「正在算什么」。没有它，一次数据分析的 60~80 秒里前端只显示
+                # 「正在思考」，用户看不出它在干活。
+                stream_mode=[_STREAM_MESSAGES, _STREAM_CUSTOM],
                 # 长期记忆按用户注入，身份只能走 context（Agent 是 lru_cache 单例）。
                 context=MemoryContext(user_id=turn.user_id),
             ),
         )
-        async for chunk, metadata in stream:
+        async for mode, payload in stream:
+            if mode == _STREAM_CUSTOM:
+                note = _note_from(payload)
+                if note is not None:
+                    # 先收掉正在写的模型块：一行说明是独立的一块，混进 thinking 里
+                    # 前端就分不出哪句是谁说的了。
+                    if current is not None:
+                        current.status = _BLOCK_COMPLETE
+                        yield _block_stop_event(current)
+                        current = None
+                    note_block = _open_block(state, _BLOCK_PLAN)
+                    note_block.text = note
+                    note_block.status = _BLOCK_COMPLETE
+                    yield _block_start_event(note_block)
+                    yield _sse(
+                        {
+                            "type": "block-delta",
+                            "block_id": note_block.block_id,
+                            "delta": note,
+                        }
+                    )
+                    yield _block_stop_event(note_block)
+                    await writer.flush()
+                continue
+            chunk, metadata = cast("tuple[BaseMessageChunk, dict[str, Any]]", payload)
             # 摘要中间件在模型之外也会调用一次 LLM 生成摘要，那些分片同样会
             # 出现在流里；只转发模型节点的输出，否则摘要正文会漏进用户气泡。
             # 这条过滤与「要不要看中间过程」无关，不能删。
@@ -748,6 +811,9 @@ async def _stream_chat(
         await writer.flush()
         yield _sse({"type": "error", "content": f"模型调用失败：{_short_error(exc)}"})
         return
+    finally:
+        charts = list(ds_turn.charts)
+        collect.finish(ds_token)
 
     if current is not None:
         current.status = _BLOCK_COMPLETE
@@ -758,6 +824,7 @@ async def _stream_chat(
         covered = await _persist_reply(
             session_id,
             "".join(collected),
+            charts=charts,
             drop_trailing_partial=request.retry,
         )
     except Exception as exc:
@@ -784,7 +851,7 @@ async def _stream_chat(
     await writer.flush()
     if covered:
         yield _sse({"type": "compaction", "covered": covered})
-    yield _sse({"type": "done", "session_id": str(session_id)})
+    yield _sse({"type": "done", "session_id": str(session_id), "charts": charts})
 
 
 @router.post("/chat", response_class=EventSourceResponse)

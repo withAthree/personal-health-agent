@@ -1,3 +1,7 @@
+# docker CLI 的来源。用官方 CLI 镜像而不是 apt 装 docker.io：CLI 是静态二进制，
+# 拷过来就能用，不带 daemon、不带 init 脚本。
+FROM docker:cli AS dockercli
+
 # 开发用后端镜像。
 #
 # 只负责按 uv.lock 把依赖装进 /app/.venv；源码在 docker-compose.yml 里以卷挂载到
@@ -25,3 +29,10 @@ RUN uv sync --frozen --no-dev
 
 # 兜底：即使项目不是以 editable 方式安装，也优先从挂载进来的源码导入。
 ENV PYTHONPATH=/app/src
+
+# DS 子 Agent 的代码执行沙箱靠它启动（agent_app/ds/docker_executor.py）。
+# 这里只放客户端； socket 由 docker/docker-compose.yml 挂进来。
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+# 构建期探针：拷错了二进制（比如拷到个动态链接的）在这里就失败，
+# 不用等一次真实分析跑到一半才发现。
+RUN docker --version

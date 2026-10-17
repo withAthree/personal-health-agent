@@ -1,6 +1,7 @@
 """应用配置：从环境变量 / ``agent-app/.env`` 读取。"""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,49 +30,77 @@ class Settings(BaseSettings):
     access_token_expire_hours: int = 48
 
     llm_api_key: str = ""
-    llm_base_url: str = "https://api.siliconflow.cn/v1"
+    #: DeepSeek 官方接口（OpenAI 兼容格式）。base_url **不要带 `/v1`**：官方文档给的是
+    #: `https://api.deepseek.com`，带 `/v1` 也能用，但两处写法不一致会让人以为是两个
+    #: 不同的端点。切换 provider 时这里必须与 ``agent-app/.env`` 的 ``LLM_BASE_URL``
+    #: 保持一致或直接删掉那一行——环境变量优先级高于代码默认值。
+    llm_base_url: str = "https://api.deepseek.com"
 
     #: 对话模型名。**开发期直接改这里**：后端跑 ``uvicorn --reload``，改完进程自动
     #: 重启、``lru_cache`` 的客户端跟着重建，不用碰容器。上线或临时切换时再用 .env
     #: 里的 ``LLM_MODEL`` 覆盖（pydantic-settings 优先级：环境变量 > 代码默认值），
     #: 那种情况下才需要重建容器——``docker compose restart`` 不会重读 ``env_file``，
     #: 要用 ``up -d``。
-    llm_model: str = "deepseek-ai/DeepSeek-V3.2"
+    llm_model: str = "deepseek-flash"
 
     #: 上下文摘要（压缩）用的模型。摘要是纯改写任务，输入长、输出短，且**在用户
     #: 等待路径上**，所以要便宜且够快。**留空表示回落到 ``llm_model``**。
     #: 开发期直接改这里即可（理由见 ``llm_model``）；各调用点的要求与验收标准见
     #: ``document/模型使用清单.md``。
-    llm_summary_model: str = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+    llm_summary_model: str = "deepseek-flash"
 
     #: 长期记忆抽取用的模型。它必须在后台可靠地吐出符合 schema 的结构化输出
     #: （``memory/extract.py`` 的 ``MemoryOps``），判错会污染之后每一轮对话，
     #: 所以选型标准与摘要不同，两者分开配置。**留空表示回落到 ``llm_model``**。
     #: 开发期也直接改这里。
-    llm_memory_model: str = "Qwen/Qwen2.5-7B-Instruct"
+    llm_memory_model: str = "deepseek-flash"
 
     #: 文档解析抽取用的模型：把 OCR 出来的纯文本转成 ``dataList`` /
     #: ``otherInfoList`` 结构。它**与对话主流程解耦**——不复用 ``get_llm`` 的
     #: 客户端，也不跟着 ``llm_model`` 走，因为这个模型的选型将来可能单独更换。
     #: **留空表示回落到 ``llm_model``**。开发期直接改这里即可（理由见
     #: ``llm_model``）。
-    llm_parse_model: str = "deepseek-ai/DeepSeek-V3.2"
+    llm_parse_model: str = "deepseek-flash"
+
+    #: 数据分析子 Agent（DS）用的模型：把自然语言问题变成分析计划（Plan），再把计划
+    #: 变成一段 pandas 代码（Code）。两个调用点在 ``ds/graph.py`` 的 ``LlmDsModel``，
+    #: 共用一个客户端。
+    #: **它不跟着 ``llm_model`` 走，必须写死一个模型名**：DS 的失败是静默的——代码
+    #: 跑得通、数字算错，用户拿到的是一份看起来正常的错误结论，不会报错。所以不能
+    #: 因为「把闲聊模型换成便宜的了」让它跟着降级。**留空表示回落到 ``llm_model``**
+    #: （不推荐，仅用于临时排查）。开发期直接改这里即可（理由见 ``llm_model``）。
+    llm_ds_model: str = "deepseek-flash"
 
     #: 是否让对话模型输出思考过程（reasoning）。
-    #: **默认关闭**：实测 ``deepseek-ai/DeepSeek-V3.2`` 开启后输出 token 约为关闭时的
-    #: 30 倍，首个正文分片从约 3 秒推迟到约 14 秒（见
+    #: **DeepSeek 官方接口的思考模式默认是开的**（默认档 ``high``），关闭必须显式传
+    #: ``extra_body={"thinking": {"type": "disabled"}}``（见 ``llm/client.py`` 的
+    #: ``get_llm()``），不传等于开着。硅基流动相反——那边不传就是关。
+    #: 开启后工具调用也能走通：官方要求带 ``tools`` 时把每轮的 ``reasoning_content``
+    #: 原样回传，否则 400；实测当前链路（``ChatOpenAIWithReasoning`` + langchain +
+    #: DeepSeek 官方接口）能正常回环，没有 400，且 ``reasoning_content`` 能被拾回。
+    #: 代价是真实存在的：在硅基流动的 ``deepseek-ai/DeepSeek-V3.2`` 上实测开启后输出
+    #: token 约为关闭时的 30 倍、首个正文分片从约 3 秒推迟到约 14 秒（见
     #: ``document/中间过程可见-设计方案.md``）。
-    #: 通过 ``extra_body`` 透传给 provider：硅基流动的参数名是 ``enable_thinking``。
-    #: 旁路任务客户端（``llm/client.py`` 的 ``get_summary_llm`` 与 ``get_memory_llm``）
-    #: 永远不开启。
+    #: 经 ``llm/client.py`` 的 ``_build_utility_llm()`` 构造的客户端永远不开启。
     llm_enable_thinking: bool = False
+
+    #: 思考**强度**，只在 ``llm_enable_thinking`` 为真时生效，作为请求体根上的
+    #: ``reasoning_effort`` 透传给 DeepSeek。官方默认档是 ``high``。
+    #: 可取的只有这三个：``low`` / ``high`` / ``max``——官方另外还接受
+    #: minimal / medium / xhigh / ultra，但它们分别映射到 low/high/high/max，
+    #: 写 ``medium`` 与写 ``high`` 完全等价，写了只会让人误以为省了钱。
+    llm_thinking_effort: Literal["low", "high", "max"] = "low"
 
     #: 模型的输入窗口（token）。框架的百分比口径（``("fraction", x)``）必须能从
     #: 模型的 ``profile`` 里读到这个值，否则 ``SummarizationMiddleware`` 在构造期
     #: 就抛 ``ValueError: Model profile information is required...``——所以它不只
     #: 决定下面两个百分比算成多少 token，还是它们能否生效的前提。
-    #: 值取 ``deepseek-ai/DeepSeek-V3.2`` 的官方窗口（上游实测接受 48K token 输入）。
-    llm_max_input_tokens: int = 128000
+    #: 值取 ``deepseek-flash``（模型版本 ``DeepSeek-V4.1-Flash``）的官方窗口 1M，
+    #: 最大输出 384K（https://api-docs.deepseek.com/quick_start/pricing）。
+    #: 副作用要知道：摘要触发线是窗口的 0.6，窗口变成 1M 之后触发线就是 600K token，
+    #: **正常对话里摘要几乎不会触发**。这是预期行为——窗口够大，而且
+    #: 缓存命中的输入价格极低，保留完整历史比压缩更好。真触发时配置照旧生效。
+    llm_max_input_tokens: int = 1_000_000
 
     #: 上下文压缩：触发摘要的阈值。**当前生效的是百分比口径**
     #: （``llm/context.py`` 的 ``SUMMARY_TRIGGER_FRACTION``），按
@@ -121,6 +150,20 @@ class Settings(BaseSettings):
             for item in self.upload_allowed_extensions.split(",")
             if item.strip()
         )
+
+    #: 数据分析子 Agent（DS）的代码执行沙箱镜像。由 ``docker/sandbox/Dockerfile``
+    #: 构建（``docker build -t pha-ds-sandbox:0.1.0 docker/sandbox``），**不是**
+    #: ``docker-compose.yml`` 里的一个服务：沙箱不常驻，每次分析起一个一次性容器。
+    #: 镜像里只有 pandas / numpy / scipy，没有本项目代码——运行器由命令行传进去
+    #: （``agent_app/ds/docker_executor.py``）。
+    #: 容器的隔离参数**不可配置**：它们是安全边界，不该有「用环境变量关掉」的开关。
+    ds_sandbox_image: str = "pha-ds-sandbox:0.1.0"
+
+    #: docker 二进制路径。做成配置项是为了可测——测试直接指到一个假路径，不用改 PATH。
+    #: backend 容器里的 ``docker`` 由 ``agent-app/Dockerfile`` 从 ``docker:cli`` 镜像
+    #: 拷进来，并靠 ``docker/docker-compose.yml`` 挂进来的 ``docker.sock``
+    #: 连宿主守护进程。
+    ds_docker_bin: str = "docker"
 
     #: 长期记忆：总开关。关闭后既不注入也不抽取（表与代码仍在）。
     memory_enabled: bool = True

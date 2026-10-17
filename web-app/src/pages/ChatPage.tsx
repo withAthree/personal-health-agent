@@ -25,6 +25,7 @@ import { Field, FieldError, FieldGroup } from '@/components/ui/field'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
+import { EChart } from '@/components/EChart'
 import { MarkdownMessage } from '@/components/MarkdownMessage'
 import { ThinkingBlock } from '@/components/ThinkingBlock'
 import { useChatSession } from '@/contexts/chat-session-context'
@@ -40,6 +41,7 @@ import {
   type StreamState,
   type StreamStatus,
 } from '@/lib/api'
+import type { ECOption } from '@/lib/echarts'
 import { fileExtension, formatFileSize } from '@/lib/file'
 import { clearLastSession } from '@/lib/session'
 import { cn } from '@/lib/utils'
@@ -77,6 +79,11 @@ interface Bubble {
   thinkingMs: number | null
   /** 回放时服务端记下的本轮状态。 */
   runStatus: StreamStatus | null
+  /**
+   * 这一轮里 DS 工具算出的图表。历史消息从账本读，当轮从 `done` 事件拿。
+   * 形状由后端 `agent-app/src/agent_app/ds/echarts.py` 决定，前端不二次加工。
+   */
+  charts: ECOption[]
 }
 
 interface DeltaItem {
@@ -174,6 +181,9 @@ function BubbleRow({
   const thinkingBlocks = bubble.blocks.filter((block) => block.kind === 'thinking')
   const thinkingText = thinkingBlocks.map((block) => block.text).join('')
   const thinkingRunning = thinkingBlocks.some((block) => block.status === 'running')
+  // DS 子 Agent 自己报的工作说明（服务端模板拼的，不是模型输出）。一次数据分析
+  // 常常要一分钟以上，这一行是那段时间里唯一说明「它在算什么」的东西。
+  const notes = bubble.blocks.filter((block) => block.kind === 'plan')
   // 首字等待期：`session`/`run-start` 已经回来、第一个过程块还没到。实测这段
   // 空等有 1–14 秒（上游排队波动），此前什么都不渲染，助手一侧只剩一个头像，
   // 看起来像卡死了
@@ -204,6 +214,19 @@ function BubbleRow({
             thinkingMs={bubble.thinkingMs}
           />
         )}
+        {isUser || notes.length === 0 ? null : (
+          <ul className="space-y-1">
+            {notes.map((block) => (
+              <li
+                key={block.id}
+                className="flex items-start gap-1.5 text-xs text-muted-foreground"
+              >
+                <Sparkles className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                <span>{block.text}</span>
+              </li>
+            ))}
+          </ul>
+        )}
         {showAnswer ? (
           <div
             className={cn(
@@ -228,6 +251,23 @@ function BubbleRow({
             )}
           </div>
         ) : null}
+        {isUser || bubble.charts.length === 0 ? null : (
+          <div className="flex flex-col gap-1">
+            {bubble.charts.map((option, index) => (
+              <div
+                key={index}
+                className="overflow-hidden rounded-2xl rounded-bl-sm bg-muted p-2"
+              >
+                {/* EChart 的高度必须由调用方给（容器没有显式高度时 canvas 高度为 0） */}
+                <EChart
+                  option={option}
+                  className="h-64 w-[min(560px,70vw)]"
+                  ariaLabel={`数据分析图表 ${String(index + 1)}`}
+                />
+              </div>
+            ))}
+          </div>
+        )}
         {isUser ? (
           onRetry === null ? null : (
             <div className="flex justify-end">
@@ -334,6 +374,7 @@ function toBubbles(messages: ChatMessage[]): Bubble[] {
     failed: false,
     // 历史只有最终正文，没有过程块：这里不造假的正文块，只留空数组
     blocks: [],
+    charts: message.charts ?? [],
     runId: null,
     runStartedAt: null,
     thinkingMs: null,
@@ -386,6 +427,7 @@ function withStreamState(
         interrupted: true,
         failed: false,
         blocks,
+        charts: [],
         runId: state.run_id,
         runStartedAt: null,
         thinkingMs: null,
@@ -845,6 +887,7 @@ export function ChatPage() {
       interrupted: false,
       failed: false,
       blocks: [],
+      charts: [],
       runId: null,
       runStartedAt: null,
       thinkingMs: null,
@@ -859,6 +902,7 @@ export function ChatPage() {
       interrupted: false,
       failed: false,
       blocks: [],
+      charts: [],
       runId: null,
       runStartedAt: null,
       thinkingMs: null,
@@ -919,6 +963,7 @@ export function ChatPage() {
             ),
           )
         } else if (event.type === 'done') {
+          patchBubble(replyId, { charts: event.charts ?? [] })
           void refreshCompactionMarker(event.session_id)
           // 一轮结束会更新 updated_at，列表顺序跟着变
           void refreshSessions()

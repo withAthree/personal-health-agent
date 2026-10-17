@@ -6,7 +6,7 @@
 
 from datetime import datetime
 
-from agent_app.llm.client import get_parse_llm
+from agent_app.llm.client import get_parse_llm, structured_output
 from agent_app.parsing.dates import normalize_date
 from agent_app.parsing.prompt import EXTRACT_PROMPT
 from agent_app.parsing.schema import LlmExtraction, ParsedReport
@@ -22,7 +22,7 @@ async def extract_report(ocr_text: str, *, uploaded_at: datetime) -> ParsedRepor
     Returns:
         结构化结果；``date`` 可能为 ``None``（原文没写清月日）。
     """
-    model = get_parse_llm().with_structured_output(LlmExtraction)
+    model = structured_output(get_parse_llm(), LlmExtraction)
     raw = await model.ainvoke([("system", EXTRACT_PROMPT), ("human", ocr_text)])
     extraction = (
         raw if isinstance(raw, LlmExtraction) else LlmExtraction.model_validate(raw)

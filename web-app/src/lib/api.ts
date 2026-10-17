@@ -1,4 +1,5 @@
 import { clearAuth, getToken, type AuthUser } from '@/lib/auth'
+import type { ECOption } from '@/lib/echarts'
 import { apiErrorFromResponse, http } from '@/lib/http'
 
 /**
@@ -48,7 +49,11 @@ export type ChatStreamEvent =
   /** 旧协议的正文分片；后端已不再发送，保留解析分支以便回滚。 */
   | { type: 'chunk'; content: string; agent_source: string }
   | { type: 'error'; content: string }
-  | { type: 'done'; session_id: string }
+  /**
+   * 本轮结束。`charts` 是这一轮里 DS 工具算出的 ECharts option，形状来自
+   * `agent-app/src/agent_app/ds/echarts.py`；没有图表时为空数组。
+   */
+  | { type: 'done'; session_id: string; charts?: ECOption[] }
 
 /** 已知事件类型；未知类型只记日志，不影响这一轮其余事件。 */
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -219,6 +224,11 @@ export interface ChatMessage {
   agent_source: string | null
   /** 该助手回复是否被用户主动终止（前端据此显示「已终止」并给出重试入口）。 */
   interrupted: boolean
+  /**
+   * 这一轮里 DS 工具算出的 ECharts option，直接交给 `EChart` 组件渲染。
+   * 形状来自 `agent-app/src/agent_app/ds/echarts.py`，前端不再做二次加工。
+   */
+  charts: ECOption[]
   created_at: string
 }
 

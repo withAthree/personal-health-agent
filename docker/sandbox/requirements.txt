@@ -1,0 +1,17 @@
+# DS 沙箱的依赖。**全部钉死到具体版本**，不用范围也不用 latest。
+#
+# 为什么必须钉死：agent-app/src/agent_app/ds/prompts.py 里那几条 pandas 3.0 约束
+# （频率别名是 ME/QE/YE、禁止链式赋值）是针对具体版本写的。写 `pandas>=3` 就会出现
+# 「提示词里说的」和「容器里跑的不是同一个版本」，那种不一致最难查。
+#
+# 只有三个顶层包：pandas 自己带 numpy 进来，scipy 提供统计分析
+# （spearmanr / kendalltau / shapiro / ttest_rel / mannwhitneyu）。
+#
+# 没有 matplotlib：图表以中立的数据契约返回（AnalysisResult 的 Figure：type/title/x/
+# series），由后端翻译成 ECharts option，沙箱不产出图片。装了只会诱导模型去画 PNG。
+#
+# cp314 的 wheel 可用性在 2026-10-17 核实过（PyPI 上这三个版本都有 cp314 构建），
+# 所以不需要源码编译。
+pandas==3.0.6
+numpy==2.5.4
+scipy==1.18.1

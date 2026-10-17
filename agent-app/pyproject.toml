@@ -52,6 +52,11 @@ target-version = "py314"
 # 显式声明源码根，否则仓库根的 alembic/ 会被当成一方包，导致 env.py 的 import 分组错误。
 src = ["src"]
 
+# 测试代码被 .gitignore 排除（不进 git），但**必须继续被 lint**。
+# respect-gitignore 默认为 true，会让 `ruff check .` 静默跳过整个 tests/ 与 conftest.py——
+# 检查范围纸面上没变，实际少掉一半。
+respect-gitignore = false
+
 exclude = [
     ".bzr", ".direnv", ".eggs", ".git", ".hg", ".mypy_cache",
     ".nox", ".pants.d", ".pytype", ".ruff_cache", ".svn",
@@ -112,7 +117,7 @@ strict_equality = true
 
 # pypdfium2 不带 py.typed，本仓库只拿它渲染页面，接口很窄，不值得为它写本地 stub。
 [[tool.mypy.overrides]]
-module = "pypdfium2.*"
+module = ["pypdfium2.*", "pandas.*"]
 ignore_missing_imports = true
 
 # ==================== Pytest ====================

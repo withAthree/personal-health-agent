@@ -36,6 +36,8 @@ class MessageOut(BaseModel):
     role: str
     content: str
     agent_source: str | None = None
+    #: 这一轮里 DS 工具算出的图表，已是 ECharts option。前端直接交给 EChart 组件渲染。
+    charts: list[dict[str, Any]] = Field(default_factory=list)
     #: 该助手回复是否被用户主动终止（前端据此显示「已终止」并给出重试入口）。
     interrupted: bool = False
     created_at: datetime

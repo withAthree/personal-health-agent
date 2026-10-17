@@ -1,4 +1,4 @@
-"""LangGraph Agent 组装：checkpointer + 摘要中间件。
+"""LangGraph Agent 组装：checkpointer + 摘要中间件 + 工具。
 
 这里有两套数据，职责必须分清：
 
@@ -23,6 +23,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from agent_app.config import settings
 from agent_app.core.database import to_libpq_dsn
+from agent_app.ds.tool import ds_analysis
 from agent_app.llm.client import SYSTEM_PROMPT, get_llm
 from agent_app.llm.context import build_summarization_middleware
 from agent_app.memory.middleware import MemoryContext, MemoryMiddleware
@@ -68,7 +69,7 @@ def get_agent() -> CompiledStateGraph[Any, Any, Any, Any]:
     """
     return create_agent(
         get_llm(),
-        tools=None,
+        tools=[ds_analysis],
         system_prompt=SYSTEM_PROMPT,
         middleware=[build_summarization_middleware(), MemoryMiddleware()],
         checkpointer=get_checkpointer(),

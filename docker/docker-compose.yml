@@ -69,6 +69,14 @@ services:
       # 上传的文件按 {user_id}/{file_id}.{ext} 落在 upload_dir（容器内 /app/uploads）。
       # 不挂到宿主机的话，容器一重建上传的文件就全没了。
       - ../agent-app/uploads:/app/uploads
+      # DS 子 Agent 的代码执行沙箱靠它启动。挂进容器等于把宿主 Docker 守护进程的
+      # 控制权交给 backend：能起特权容器、能挂宿主根目录。接受这个风险的依据是三条：
+      # 写 socket 的是 backend 的代码，不是沙箱里模型生成的代码（沙箱自己不挂
+      # socket、--network none、不挂任何宿主路径）；backend 唯一的不可信输入是上传
+      # 的 PDF / 图片，走本地解析、不执行其中的代码；沙箱镜像是本仓库的
+      # docker/sandbox/Dockerfile，不是任意外部镜像。
+      # 要收回它只需换掉 agent_app/ds/docker_executor.py，ds/ 其余部分一行不用改。
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       db:
         condition: service_healthy
@@ -76,6 +84,18 @@ services:
         condition: service_healthy
     # 建表（alembic upgrade head）不属于当前功能，迁移仍需手动执行。
     command: ["uv", "run", "--no-sync", "agent-app"]
+
+  # 沙箱镜像不是常驻服务，列在这里只是让「这个镜像属于本项目」有唯一出处。
+  # 构建：docker compose --profile sandbox build sandbox
+  # 镜像名必须与 agent_app/config.py 里 ds_sandbox_image 的默认值一致，
+  # 否则 backend 会在第一次分析时找不到镜像。
+  sandbox:
+    profiles: ["sandbox"]
+    build:
+      context: ./sandbox
+    image: pha-ds-sandbox:0.1.0
+    # 只用来构建，不需要启动。
+    command: ["true"]
 
 volumes:
   pgvector_data:

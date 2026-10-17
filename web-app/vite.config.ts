@@ -2,7 +2,9 @@ import { fileURLToPath, URL } from 'node:url'
 
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+// `vitest/config` 的 defineConfig 是 vite 那个的超集：多一个 `test` 字段，
+// 其余（`plugins` / `resolve` / `build`）完全一致，所以测试与构建共用一个别名表。
+import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -10,6 +12,15 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+  },
+  test: {
+    // 组件要真实 DOM：jsdom 提供 document / window 与 localStorage（api.ts 读 token）
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
+    // 每个用例后自动还原 spy 与 stubGlobal，避免用例之间互相污染
+    restoreMocks: true,
+    unstubGlobals: true,
   },
   server: {
     port: 5173,

@@ -22,7 +22,7 @@ import structlog
 from pydantic import BaseModel, Field
 
 from agent_app.config import settings
-from agent_app.llm.client import get_memory_llm
+from agent_app.llm.client import get_memory_llm, structured_output
 from agent_app.memory.render import MAX_CONTENT_CHARS, one_line
 from agent_app.memory.store import (
     add_memory,
@@ -155,7 +155,7 @@ async def extract_turn_memories(
         return 0
     try:
         digest = await fetch_digest(user_id)
-        model = get_memory_llm().with_structured_output(MemoryOps)
+        model = structured_output(get_memory_llm(), MemoryOps)
         raw = await model.ainvoke(
             EXTRACT_PROMPT.format(
                 existing=_render_digest(digest),
