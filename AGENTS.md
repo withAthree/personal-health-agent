@@ -44,13 +44,13 @@ AOCI 索引是面向模型的高密度认知地图，不是源码副本。它可
 
 2. 仓库已经存在可用的完整索引，但当前Run没有可靠完整认知时，先调用 `aoci_rules`，再调用 `aoci_overview`。
 
-	完整认知仍可靠时直接复用。只有局部不确定时，优先调查当前源码或按需使用局部Entry与搜索，不机械重读系统全貌。
+ 完整认知仍可靠时直接复用。只有局部不确定时，优先调查当前源码或按需使用局部Entry与搜索，不机械重读系统全貌。
 
-	AOCI可以针对 `context_compaction`、项目 `cognition_refresh_threshold` 下的机器 `semantic_threshold` 或主要 `phase_transition` 提供checkpoint与认知状态事实。只需要这些紧凑事实时使用 `check_only=true`；这些事实只向Agent提供建议，不替模型决定是否需要系统全貌。
+ AOCI可以针对 `context_compaction`、项目 `cognition_refresh_threshold` 下的机器 `semantic_threshold` 或主要 `phase_transition` 提供checkpoint与认知状态事实。只需要这些紧凑事实时使用 `check_only=true`；这些事实只向Agent提供建议，不替模型决定是否需要系统全貌。
 
-	Agent显式调用普通 `aoci_overview`（未设置 `check_only` 或为false）时，只要能形成一致的CognitionSet，AOCI必须完整交付请求scope。不得因为已有receipt、阈值未达到或没有待处理刷新原因而抑制正文。正式认知Dirty或Stale时仍交付正文，但必须标记不可靠，且不得覆盖当前源码、测试、配置或数据库证据。存在未决恢复或无法形成一致snapshot时失败关闭，不返回混合正文。
+ Agent显式调用普通 `aoci_overview`（未设置 `check_only` 或为false）时，只要能形成一致的CognitionSet，AOCI必须完整交付请求scope。不得因为已有receipt、阈值未达到或没有待处理刷新原因而抑制正文。正式认知Dirty或Stale时仍交付正文，但必须标记不可靠，且不得覆盖当前源码、测试、配置或数据库证据。存在未决恢复或无法形成一致snapshot时失败关闭，不返回混合正文。
 
-	普通Overview返回 `continuation_required=true` 时，必须原样提交 `next_cursor` 并自动继续到 `completed=true`。不得询问用户、开始业务任务或给出阶段性系统结论。Host截断、缺块、重复、乱序、cursor失败、Index变化或`chunk_tokens`变化时停止本次认知链。Attestation完成前不得用Memory、源码、Spec、`aoci.txt`、历史会话、scope、search或Entry读取修补或补充Whole-Index认知。Challenge ordinal是正式Entry序列中的1-based位置；Header内容、注释、空行、Section/Overview/Chunk Marker、Receipt与Metadata均不计数，Chunk Receipt ordinal使用同一序列。Attestation必须原样回绑本次Challenge发布的当前`index_sha256`、`entry_sequence_sha256`与`entry_count`；旧Index、旧Entry序列、旧数量或旧Attestation均无效。完整链结束后只正式提交一次既有模型认知Attestation；同一响应只允许一次不改变语义答案的JSON Schema或字段格式修正。对象、Tag或F不匹配即失败且认知吸收不确定，不得语义重试或旁路补答；这会禁止无保留地声称完整系统认知，但不禁止诚实回答、读取任务相关源码和测试或继续source-bound工程。首次认知失败时还不得执行Root/Meta、Migration、全局布局或其他未重新绑定源码的系统级决策。上下文压缩刷新若传输完整、认知身份不变、治理对齐且没有Recovery或第三方冲突，即使Attestation为partial或fail也消费该refresh generation，并继续原source-bound任务，不再自动重读Overview。`system_mastery_percent`只自评系统框架——架构、职责、强关系、稳定外部契约以及高熵安全和维护约束——不表示完整源码或运行实况知识；机器索引覆盖率必须分开。默认只向用户输出由本次真实覆盖率、Challenge、块数、Token和掌握度生成的规定成功或失败一句话。Host截断时提示用户把 `overview_delivery.chunk_tokens` 设置为更小的合法值后重新开始，不得自动修改。
+ 普通Overview返回 `continuation_required=true` 时，必须原样提交 `next_cursor` 并自动继续到 `completed=true`。不得询问用户、开始业务任务或给出阶段性系统结论。Host截断、缺块、重复、乱序、cursor失败、Index变化或`chunk_tokens`变化时停止本次认知链。Attestation完成前不得用Memory、源码、Spec、`aoci.txt`、历史会话、scope、search或Entry读取修补或补充Whole-Index认知。Challenge ordinal是正式Entry序列中的1-based位置；Header内容、注释、空行、Section/Overview/Chunk Marker、Receipt与Metadata均不计数，Chunk Receipt ordinal使用同一序列。Attestation必须原样回绑本次Challenge发布的当前`index_sha256`、`entry_sequence_sha256`与`entry_count`；旧Index、旧Entry序列、旧数量或旧Attestation均无效。完整链结束后只正式提交一次既有模型认知Attestation；同一响应只允许一次不改变语义答案的JSON Schema或字段格式修正。对象、Tag或F不匹配即失败且认知吸收不确定，不得语义重试或旁路补答；这会禁止无保留地声称完整系统认知，但不禁止诚实回答、读取任务相关源码和测试或继续source-bound工程。首次认知失败时还不得执行Root/Meta、Migration、全局布局或其他未重新绑定源码的系统级决策。上下文压缩刷新若传输完整、认知身份不变、治理对齐且没有Recovery或第三方冲突，即使Attestation为partial或fail也消费该refresh generation，并继续原source-bound任务，不再自动重读Overview。`system_mastery_percent`只自评系统框架——架构、职责、强关系、稳定外部契约以及高熵安全和维护约束——不表示完整源码或运行实况知识；机器索引覆盖率必须分开。默认只向用户输出由本次真实覆盖率、Challenge、块数、Token和掌握度生成的规定成功或失败一句话。Host截断时提示用户把 `overview_delivery.chunk_tokens` 设置为更小的合法值后重新开始，不得自动修改。
 
    加法认知等级必须与严格证明字段分开解释。`delivery_verified`表示已加载Index且Host交付已确认，但完整认知验证仍未完成；应表达为“已加载且交付已验证”，不得描述为“没有认知”或“没有理解系统”。`cognition_verified`要求严格Challenge 10/10，`cognition_governed`还要求治理对齐。通用完整读取失败句只用于真实交付故障。
 
@@ -60,34 +60,34 @@ AOCI 索引是面向模型的高密度认知地图，不是源码副本。它可
 
    只有用户明确禁止Ledger、元数据、`.aoci`运行资产及任何文件写入时，才按严格零写入处理。若必要的认知建立与该边界冲突，必须报告冲突并请求用户裁决或建议使用隔离副本，不得静默以Memory替代当前仓库认知。
 
-3. 仓库没有可用的完整索引，或当前只有最小骨架、Header不完整、Entries未完成、必要Curation尚未裁决时，不得把不完整内容当作完整仓库认知。
+1. 仓库没有可用的完整索引，或当前只有最小骨架、Header不完整、Entries未完成、必要Curation尚未裁决时，不得把不完整内容当作完整仓库认知。
 
    先取得 `aoci_rules`，然后进入当前AOCI Guide。由Guide依据仓库真实状态决定下一阶段，完成必要的起点确认、Header、Entries、Curation及其他安全步骤，直到能够取得可用的完整Overview。
 
    不在本文件中自行重建或硬编码完整索引生成状态机。
 
-4. 在长程任务中，模型负责保留当前认知收据并正确使用刷新门禁：
+2. 在长程任务中，模型负责保留当前认知收据并正确使用刷新门禁：
 
-	- 只有局部文件、模块、关系或约束不确定时，阅读当前源码，或按需使用局部条目与搜索工具；
-	- 模型已知系统全貌丢失时声明 `context_compaction`，AOCI不能自行推断宿主事件；
-	- 进入真正的主要阶段时声明 `phase_transition`，不得把函数、测试运行或小步骤当作阶段；
-	- 在有用的稳定检查点通过 `check_only=true` 取得机器语义计数；
-	- 由Agent判断当前任务是否需要再次显式获取指定scope或完整Overview；
-	- 维护和aligned尚未完成时，绝不把Dirty或Stale认知当作当前实现证据。
+- 只有局部文件、模块、关系或约束不确定时，阅读当前源码，或按需使用局部条目与搜索工具；
+- 模型已知系统全貌丢失时声明 `context_compaction`，AOCI不能自行推断宿主事件；
+- 进入真正的主要阶段时声明 `phase_transition`，不得把函数、测试运行或小步骤当作阶段；
+- 在有用的稳定检查点通过 `check_only=true` 取得机器语义计数；
+- 由Agent判断当前任务是否需要再次显式获取指定scope或完整Overview；
+- 维护和aligned尚未完成时，绝不把Dirty或Stale认知当作当前实现证据。
 
 ### 普通开发
 
-5. 使用AOCI认知理解系统位置、对象职责、跨模块关系和关键约束，然后实际阅读当前任务涉及的源码、测试、配置、数据库结构和必要关联证据。
+1. 使用AOCI认知理解系统位置、对象职责、跨模块关系和关键约束，然后实际阅读当前任务涉及的源码、测试、配置、数据库结构和必要关联证据。
 
    不得用索引摘要替代具体实现证据。索引与当前事实不一致时，以源码、测试、配置或数据库结构核实具体实现，并在任务收尾时维护过期认知。
 
-6. 按用户需求和本仓库既有架构、规范及验证方式完成正常开发。
+2. 按用户需求和本仓库既有架构、规范及验证方式完成正常开发。
 
    AOCI不规定架构、算法、调查顺序、实现方式、测试策略、分支策略或技术栈选择，也不应成为用户任务之外的开发流程中心。
 
    当仓库提供开发分层时，普通开发在Commit和Push前只运行单一Fast门；Full Confidence是后台或稳定版本冻结门，Release Rehearsal是非发布型稳定版本门。普通Agent不得在每次修改后等待全仓race、原生生命周期、数据库集成或发布打包。
 
-7. 普通任务的用户可见沟通应聚焦需求理解、源码调查、实现、测试、风险、提交和工作树状态。
+3. 普通任务的用户可见沟通应聚焦需求理解、源码调查、实现、测试、风险、提交和工作树状态。
 
    内部认知建立、状态检查和认知维护默认不主动展开。用户主动询问，或出现真实阻断、冲突、审批、人工裁决、安全风险或无法继续的运行故障时，必须如实说明必要事实。
 
@@ -95,17 +95,17 @@ AOCI 索引是面向模型的高密度认知地图，不是源码副本。它可
 
 ### 任务收尾与认知维护
 
-8. 纯只读问答、分析、版本核验，或没有产生受AOCI管理对象变化的任务，不需要调用维护工具。
+1. 纯只读问答、分析、版本核验，或没有产生受AOCI管理对象变化的任务，不需要调用维护工具。
 
-9. 发生受AOCI管理对象变化的开发任务，应在业务修改、格式化、测试、Lint及必要质量检查全部完成，并且受管理对象达到本次任务的最终稳定状态后，再调用一次 `aoci_maintain`。
+2. 发生受AOCI管理对象变化的开发任务，应在业务修改、格式化、测试、Lint及必要质量检查全部完成，并且受管理对象达到本次任务的最终稳定状态后，再调用一次 `aoci_maintain`。
 
    不要在每次中间修改后逐文件维护。
 
-10. 若维护结果返回真实语义候选，模型必须完整阅读受影响对象及必要关联证据，再生成对应标签和F/R/A/S更新，并通过 `aoci_update_entry` 一次提交当前机器签发批次的完整候选集合，同时原样保留每项 `source_sha256`、`candidate_id` 与对应domain批次身份。`max_entries`只限制单次请求和原子事务，不限制logical plan、Whole-Index或Managed Scope。`remaining`非零时，在当前批次成功Apply后重新调用Maintain并从新preimage继续；绝不能为满足transport上限缩减Index覆盖或自行截取返回批次。
+3. 若维护结果返回真实语义候选，模型必须完整阅读受影响对象及必要关联证据，再生成对应标签和F/R/A/S更新，并通过 `aoci_update_entry` 一次提交当前机器签发批次的完整候选集合，同时原样保留每项 `source_sha256`、`candidate_id` 与对应domain批次身份。`max_entries`只限制单次请求和原子事务，不限制logical plan、Whole-Index或Managed Scope。`remaining`非零时，在当前批次成功Apply后重新调用Maintain并从新preimage继续；绝不能为满足transport上限缩减Index覆盖或自行截取返回批次。
 
     没有把握时使用 `aoci_report`，不得为了消除待办而猜测、套用模板或生成缺乏证据的认知。
 
-11. 必须遵守工具返回的结构化状态和安全边界：
+4. 必须遵守工具返回的结构化状态和安全边界：
 
     - `repair_required`：只修复明确命中的候选，再重新提交当前机器签发的完整批次；
     - `stopped`：结束当前写入尝试并检查 `failed_step`、错误、正式写入证据与Recovery。auto模式下，已证明零写入则记录closure并重新Plan；完整Intent和可证明postimage则Resume；策略要求Rollback且preimage可证明则精确恢复后重新Plan。只有证据不足、第三方正式字节冲突、需要审批或外部动作，或命中其他真实安全边界时，才停止整个用户任务；
@@ -114,7 +114,7 @@ AOCI 索引是面向模型的高密度认知地图，不是源码副本。它可
 
     维护完成后如果又修改了任何受管理对象，之前的维护结果失效，应在新的最终稳定状态重新完成收尾。
 
-12. 用户只限制业务文件范围，但没有明确禁止仓库托管资产时，AOCI托管资产可以在收尾阶段为保持认知一致而更新，并应在审计和提交中与业务文件区分。
+5. 用户只限制业务文件范围，但没有明确禁止仓库托管资产时，AOCI托管资产可以在收尾阶段为保持认知一致而更新，并应在审计和提交中与业务文件区分。
 
     用户明确禁止修改 `aoci.txt`、`.aoci`、元数据或任何额外文件时，以用户限制为准，不得写入，并如实报告剩余不一致。
 
@@ -126,3 +126,16 @@ AOCI 索引是面向模型的高密度认知地图，不是源码副本。它可
 
 AOCI提供稳定的仓库级认知，但不替代源码事实、测试证据、数据库结构、结构化代码分析和模型正常的软件工程判断。
 <!-- aoci:end -->
+
+## 开发要求
+
+### 语言风格
+
+1. 禁止使用“比喻”的修辞手法，除非只有使用“比喻”才能更好地进行描述。
+2. 要具体不要抽象。
+
+### 编码要求
+
+1. 实现某个功能前，先了解开源社区是否有解决方案，不要自己重复造轮子。如果已经有开源的解决方案，使用下载量、使用量大的，不要用那种没人用的。
+2. 以最小功能点为单位，每次动手开发前要先和我讨论，我允许了才能动手开发。
+3. 如果有SKILL，优先使用已有的SKILL。
