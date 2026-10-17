@@ -87,6 +87,36 @@ def test_several_series_get_a_legend_naming_all_of_them() -> None:
     assert len(option["series"]) == 2
 
 
+def test_legend_sits_below_the_title_and_the_grid_below_both() -> None:
+    """标题、图例、坐标轴各占一条带子，谁也不压谁。
+
+    标题长度是数据决定的——模型写过「步数：观测值、Sen 趋势线与 7 日居中滚动均值」
+    这种长标题，旧版把图例也放在 ``top=0`` 贴右边，两行字直接叠成一团。
+    """
+    option = to_echarts(
+        _line(
+            title="步数：观测值、Sen 趋势线与 7 日居中滚动均值",
+            series=[
+                Series(name="步数", values=[9000.0, 9100.0]),
+                Series(name="Sen 趋势线", values=[8900.0, 8950.0]),
+                Series(name="7 日居中滚动均值", values=[8800.0, 8850.0]),
+            ],
+        )
+    )
+
+    assert option["legend"]["left"] == option["title"]["left"]
+    assert option["legend"]["top"] > option["title"]["top"]
+    assert option["grid"]["top"] - option["legend"]["top"] >= 20
+    # 纵轴的名字贴着轴顶，不能顶进图例那一条带子。
+    assert option["yAxis"]["nameGap"] < 10
+
+
+def test_without_a_legend_the_grid_still_clears_the_title() -> None:
+    option = to_echarts(_line())
+
+    assert option["grid"]["top"] > option["title"]["top"]
+
+
 @pytest.mark.parametrize("figure_type", ["line", "bar"])
 def test_option_only_uses_components_the_frontend_registered(figure_type: str) -> None:
     option = to_echarts(
